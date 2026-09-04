@@ -53,11 +53,44 @@ def run_tests():
     }
 
 
+def bundled_fixture(path):
+    """Confirm the packaged binary carries the machine profile it verifies against.
+
+    A one-file build without --add-data still launches, so this cannot be checked
+    by watching the process stay alive. Read the archive instead.
+    """
+    try:
+        from PyInstaller.archive.readers import CArchiveReader
+    except ImportError:
+        return {"checked": False, "reason": "PyInstaller not installed"}
+    try:
+        archive = CArchiveReader(str(path))
+        entry = next((name for name in archive.toc if "observed.txt" in name), None)
+        if entry is None:
+            return {"checked": True, "present": False,
+                    "reason": "observed.txt missing; the app cannot verify the profile"}
+        text = archive.extract(entry)
+        text = text.decode("ascii", "replace") if isinstance(text, (bytes, bytearray)) else str(text)
+        return {
+            "checked": True,
+            "present": True,
+            "entry": entry,
+            "firmware_line": "[VER:V1.055.Oct 13 2023:]" in text,
+            "bed_setting": "$130=365.000" in text,
+        }
+    except Exception as exc:
+        return {"checked": False, "reason": f"{type(exc).__name__}: {exc}"}
+
+
 def executables():
     found = {}
     for path in sorted(ROOT.glob("AtomstackController*.exe")):
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
-        found[path.name] = {"bytes": path.stat().st_size, "sha256": digest}
+        found[path.name] = {
+            "bytes": path.stat().st_size,
+            "sha256": digest,
+            "fixture": bundled_fixture(path),
+        }
     return found
 
 
@@ -98,6 +131,13 @@ def render(report):
         lines.append("is on disk and do NOT prove it was built from the commit above:")
         for name, meta in report["executables"].items():
             lines.append(f"  {name}  {meta['bytes']} bytes  sha256 {meta['sha256']}")
+            fixture = meta["fixture"]
+            if not fixture.get("checked"):
+                lines.append(f"    fixture bundle: not checked ({fixture.get('reason')})")
+            elif fixture.get("present") and fixture.get("firmware_line") and fixture.get("bed_setting"):
+                lines.append("    fixture bundle: observed.txt present, V1.055 and $130=365.000 intact")
+            else:
+                lines.append(f"    fixture bundle: FAIL {fixture}")
     else:
         lines.append("No packaged executable present. Build one before delivery.")
     lines += [
