@@ -12,6 +12,11 @@ from .protocol import READ_COMMANDS
 from .transports import SerialTransport, Simulator, list_ports
 from .geometry import Document, Shape, BED_X, BED_Y, shape_bounds, shape_paths
 from .materials import MaterialLibrary, MaterialPreset
+from .viewport import (
+    anchor_point, arrow_target, clamp_to_bed, clamp_zoom, corner_handles, fit_viewport,
+    handle_at as handle_hit, inside_bed, snap_value, topmost_at,
+    zoom_pan_correction,
+)
 
 
 LOG_FILTERS = ("Warnings and errors", "Errors only", "Information", "USB traffic")
@@ -372,36 +377,35 @@ class App:
         canvas = self.canvas
         canvas.delete("all")
         width, height = canvas.winfo_width(), canvas.winfo_height()
-        x0, y0, scale = self.machine_bed_transform()
-        if scale <= 0:
-            return
-        x1, y1 = x0 + 365 * scale, y0 - 305 * scale
-        for x in range(0, 366, 50):
-            px = x0 + x * scale
+        view = self.machine_bed_transform()
+        x0, y0, scale = view
+        x1, y1 = view.to_canvas(BED_X, BED_Y)
+        for x in range(0, int(BED_X) + 1, 50):
+            px = view.to_canvas(x, 0)[0]
             canvas.create_line(px, y0, px, y1, fill="#e1e7ea")
-        for y in range(0, 306, 50):
-            py = y0 - y * scale
+        for y in range(0, int(BED_Y) + 1, 50):
+            py = view.to_canvas(0, y)[1]
             canvas.create_line(x0, py, x1, py, fill="#e1e7ea")
         canvas.create_rectangle(x0, y1, x1, y0, outline="#718793")
         canvas.create_text(x0, y0 + 14, text="0, 0", anchor="w", fill="#405864", font=("Segoe UI", 9))
-        canvas.create_text(x1, y1 - 10, text="365, 305", anchor="e", fill="#405864", font=("Segoe UI", 9))
+        canvas.create_text(x1, y1 - 10, text=f"{BED_X:g}, {BED_Y:g}", anchor="e", fill="#405864", font=("Segoe UI", 9))
         workspace = getattr(self, "geometry", None)
         selected = self.selected_machine_object_index()
         if workspace:
             for index, shape in enumerate(workspace.document.shapes):
                 color, line_width = ("#65767e", 2) if index == selected else ("#aeb8bd", 1)
                 for path in shape_paths(shape):
-                    coords = [coordinate for point in path for coordinate in (x0+point[0]*scale, y0-point[1]*scale)]
+                    coords = [coordinate for point in path for coordinate in view.to_canvas(*point)]
                     if len(coords) >= 4:
                         canvas.create_line(*coords, fill=color, width=line_width)
         xy = self.controller.app_position
         if xy:
-            x, y = x0 + xy[0] * scale, y0 - xy[1] * scale
+            x, y = view.to_canvas(*xy)
             canvas.create_oval(x - 5, y - 5, x + 5, y + 5, fill="#155eef", outline="white", width=2)
             canvas.create_line(x - 10, y, x + 10, y, fill="#155eef")
             canvas.create_line(x, y - 10, x, y + 10, fill="#155eef")
             if self.click_target and not self.controller._near(xy, self.click_target):
-                tx, ty = x0 + self.click_target[0] * scale, y0 - self.click_target[1] * scale
+                tx, ty = view.to_canvas(*self.click_target)
                 canvas.create_oval(tx - 7, ty - 7, tx + 7, ty + 7, outline="#d66a1f", width=2, dash=(3, 2))
                 canvas.create_text(tx, ty - 12, text=f"{self.click_target[0]:.1f}, {self.click_target[1]:.1f}",
                                    anchor="s", fill="#b34f12", font=("Segoe UI", 9))
@@ -409,9 +413,8 @@ class App:
             canvas.create_text((x0 + x1) / 2, (y0 + y1) / 2, text="Position appears after\na confirmed home", fill="#53627a", font=("Segoe UI", 12), justify="center")
 
     def click_bed(self, event):
-        x0, y0, scale = self.machine_bed_transform()
-        x, y = (event.x - x0) / scale, (y0 - event.y) / scale
-        if not (0 <= x <= 365 and 0 <= y <= 305):
+        x, y = self.machine_bed_transform().to_bed(event.x, event.y)
+        if not inside_bed(x, y):
             self.controller.message = "Click inside the outlined machine bed."
             return
         target = (round(x, 1), round(y, 1))
@@ -422,13 +425,11 @@ class App:
             self.controller.message = str(exc)
 
     def machine_bed_transform(self):
-        width, height = self.canvas.winfo_width(), self.canvas.winfo_height()
-        base = min((width - 80) / 365, (height - 50) / 305)
-        scale = max(0.01, base * self.view_zoom)
-        return width / 2 - 182.5 * scale, height / 2 + 152.5 * scale, scale
+        return fit_viewport(self.canvas.winfo_width(), self.canvas.winfo_height(),
+                            80, 50, self.view_zoom)
 
     def zoom_bed(self, event):
-        self.view_zoom = max(1.0, min(5.0, self.view_zoom * (1.2 if event.delta > 0 else 1/1.2)))
+        self.view_zoom = clamp_zoom(self.view_zoom, 1.2 if event.delta > 0 else 1/1.2, 1.0, 5.0)
         self.draw_bed()
         return "break"
 
@@ -449,9 +450,7 @@ class App:
             base = (c.target[0] - c.origin[0], c.target[1] - c.origin[1])
         else:
             base = c.app_position
-        step = self.selected_distance()
-        dx, dy = {"Left":(-step, 0), "Right":(step, 0), "Up":(0, step), "Down":(0, -step)}[direction]
-        target = (max(0, min(365, base[0] + dx)), max(0, min(305, base[1] + dy)))
+        target = arrow_target(base, direction, self.selected_distance())
         self.pending_key_target = target
         self.click_target = target
         c.message = f"Arrow target buffered: X {target[0]:.1f}, Y {target[1]:.1f}."
@@ -504,10 +503,7 @@ class App:
             self.controller.message = "Choose a design object first."
             return
         shape = workspace.document.shapes[index]
-        left, bottom, right, top = shape_bounds(shape)
-        targets = {"BL":(left, bottom), "BR":(right, bottom), "TL":(left, top), "TR":(right, top),
-                   "C":((left+right)/2, (bottom+top)/2)}
-        target = targets[anchor]
+        target = anchor_point(shape_bounds(shape), anchor)
         try:
             self.controller.jog_to(*target, self.selected_feed())
             self.click_target = target
@@ -1212,17 +1208,12 @@ class GeometryWindow:
         self.mirror_y.set(shape.mirror_y)
 
     def transform(self):
-        width, height = max(100, self.bed.winfo_width()), max(100, self.bed.winfo_height())
-        base = min((width - 64) / BED_X, (height - 50) / BED_Y)
-        scale = max(0.01, base * self.view_zoom)
-        return width / 2 - BED_X * scale / 2 + self.pan_x, height / 2 + BED_Y * scale / 2 + self.pan_y, scale
+        return fit_viewport(max(100, self.bed.winfo_width()), max(100, self.bed.winfo_height()),
+                            64, 50, self.view_zoom, self.pan_x, self.pan_y)
 
     def to_bed(self, event, clamp=True):
-        x0, y0, scale = self.transform()
-        x, y = (event.x - x0) / scale, (y0 - event.y) / scale
-        if clamp:
-            x, y = max(0, min(BED_X, x)), max(0, min(BED_Y, y))
-        return x, y
+        x, y = self.transform().to_bed(event.x, event.y)
+        return clamp_to_bed(x, y) if clamp else (x, y)
 
     def grid_step(self):
         try:
@@ -1231,21 +1222,22 @@ class GeometryWindow:
             return 1.0
 
     def snap(self, value):
-        if not self.snap_enabled.get():
-            return value
-        step = self.grid_step()
-        return round(value / step) * step
+        return snap_value(value, self.grid_step(), self.snap_enabled.get())
 
     def zoom_by(self, factor, center=None):
         old = self.view_zoom
-        self.view_zoom = max(0.5, min(8.0, self.view_zoom * factor))
-        if center and self.view_zoom != old:
+        zoom = clamp_zoom(old, factor, 0.5, 8.0)
+        if center and zoom != old:
+            # Sample the cursor point under the OLD zoom before changing it,
+            # otherwise both samples agree and the correction is always zero.
             before = self.to_bed(center, clamp=False)
-            self.draw()
+            self.view_zoom = zoom
             after = self.to_bed(center, clamp=False)
-            _, _, scale = self.transform()
-            self.pan_x += (after[0] - before[0]) * scale
-            self.pan_y -= (after[1] - before[1]) * scale
+            dx, dy = zoom_pan_correction(before, after, self.transform().scale)
+            self.pan_x += dx
+            self.pan_y += dy
+        else:
+            self.view_zoom = zoom
         self.zoom_text.set(f"{self.view_zoom * 100:.0f}%")
         self.draw()
 
@@ -1278,27 +1270,18 @@ class GeometryWindow:
 
     def shape_at(self, event):
         x, y = self.to_bed(event, clamp=False)
-        _, _, scale = self.transform()
-        tolerance = 7 / scale
-        for index in range(len(self.document.shapes) - 1, -1, -1):
-            shape = self.document.shapes[index]
-            left, bottom, right, top = shape_bounds(shape)
-            if left-tolerance <= x <= right+tolerance and bottom-tolerance <= y <= top+tolerance:
-                return index
-        return None
+        bounds = [shape_bounds(shape) for shape in self.document.shapes]
+        return topmost_at(x, y, bounds, self.transform().millimetres(7))
 
     def handle_at(self, event):
         if len(self.selected_indices()) != 1 or self.selected is None or self.selected >= len(self.document.shapes):
             return None
         x, y = self.to_bed(event, clamp=False)
-        _, _, scale = self.transform()
-        tolerance = 9 / scale
         shape = self.document.shapes[self.selected]
         if shape.rotation % 360:
             return None
-        handles = {"BL": (shape.x, shape.y), "BR": (shape.x+shape.width, shape.y),
-                   "TL": (shape.x, shape.y+shape.height), "TR": (shape.x+shape.width, shape.y+shape.height)}
-        return next((name for name, point in handles.items() if abs(x-point[0]) <= tolerance and abs(y-point[1]) <= tolerance), None)
+        handles = corner_handles(shape.x, shape.y, shape.width, shape.height)
+        return handle_hit(x, y, handles, self.transform().millimetres(9))
 
     def begin_design_change(self):
         if self.interaction and not self.interaction.get("changed"):
@@ -1449,7 +1432,7 @@ class GeometryWindow:
             self.bed.create_line(x0, y0 - y * scale, x1, y0 - y * scale, fill="#e1e7ea")
         self.bed.create_rectangle(x0, y1, x1, y0, outline="#718793")
         self.bed.create_text(x0, y0 + 13, text="0, 0", anchor="w", fill="#405864", font=("Segoe UI", 9))
-        self.bed.create_text(x1, y1 - 9, text="365, 305", anchor="e", fill="#405864", font=("Segoe UI", 9))
+        self.bed.create_text(x1, y1 - 9, text=f"{BED_X:g}, {BED_Y:g}", anchor="e", fill="#405864", font=("Segoe UI", 9))
         selected_indices = set(self.selected_indices())
         for index, shape in enumerate(self.document.shapes):
             color, width = ("#155eef", 3) if index in selected_indices else ("#405864", 2)
