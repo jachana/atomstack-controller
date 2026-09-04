@@ -7,6 +7,7 @@ No stored coordinate is ever trusted across a connection or reset.
 from collections import deque
 from dataclasses import dataclass
 import math
+import re
 import time
 
 from .protocol import EXPECTED, READ_COMMANDS, parse_setting, parse_status
@@ -54,6 +55,9 @@ class Controller:
         self.laser_off = False
         self.physical_laser_off = False  # Optional user fact; never required by a motion guard.
         self.phase = "disconnected"
+        # Set here as well as in attach(): tick() reads it whenever the phase is
+        # "settling", and a cleared session must never leave it undefined.
+        self.settle_until = math.inf
         self.motion_deadline = math.inf
         self.last_poll = -math.inf
         self.deferred_motion = None
@@ -351,7 +355,6 @@ class Controller:
         self._start_job_command()
 
     def _validate_job_command(self, command):
-        import re
         if command in ("G21", "G90", "M5", "S0"):
             return None
         power = re.fullmatch(r"M4 S(\d+)", command)
