@@ -22,3 +22,6 @@ live-connection.json
 live-executable-verification.json
 terminal-live-report.json
 terminal-report.json
+
+# Local Claude Code session state
+.claude/
