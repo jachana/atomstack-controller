@@ -1,0 +1,5 @@
+# Development and packaging tools. Runtime dependencies live in requirements.txt.
+-r requirements.txt
+
+pytest==8.3.3
+pyinstaller==6.21.0
