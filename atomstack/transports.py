@@ -3,6 +3,8 @@ from typing import Protocol
 from collections import deque
 import re
 
+from .protocol import parse_setting
+
 
 class Transport(Protocol):
     def read(self) -> bytes: ...
@@ -37,70 +39,145 @@ class SerialTransport:
 
 
 class Simulator:
-    """Synthetic motion/status; never opens a port. Actual settings come from the fixture."""
+    """Synthetic GRBL controller. Never opens a port.
+
+    This models the *machine*, not the app. It deliberately accepts commands the
+    controller would refuse, because a simulator stricter than the real firmware
+    hides exactly the bugs it exists to catch: if the simulator rejects an unsafe
+    jog, the test passes whether or not the controller guard is present. Bounds,
+    feed limits and command whitelisting belong in the controller, and the tests
+    have to be able to see when they go missing.
+
+    Behaviour follows the observed fixture. Settings come from the real ``$$``
+    dump, spindle speed clamps to ``$30`` the way GRBL does rather than erroring,
+    and soft limits stay off because the fixture reports ``$20=0``, so the
+    firmware accepts moves past the table edge.
+
+    ``error:20`` is reserved for genuinely unrecognised commands, which is what
+    GRBL uses it for.
+    """
+
+    JOG_RELATIVE = re.compile(r"\$J=G21 G91 ([XYZ])(-?\d+(?:\.\d+)?) F(\d+(?:\.\d+)?)")
+    JOG_ABSOLUTE = re.compile(
+        r"\$J=G21 G90 G53 X(-?\d+(?:\.\d+)?) Y(-?\d+(?:\.\d+)?) F(\d+(?:\.\d+)?)")
+    MOVE = re.compile(
+        r"G53 G([01]) X(-?\d+(?:\.\d+)?) Y(-?\d+(?:\.\d+)?)(?: F(\d+(?:\.\d+)?))?")
+    SPINDLE = re.compile(r"M([34]) S(\d+)")
+
     def __init__(self):
         from pathlib import Path
         self.fixture = (Path(__file__).parent / "fixtures" / "observed.txt").read_text()
+        self.settings = {}
+        for line in self.fixture.splitlines():
+            parsed = parse_setting(line.strip())
+            if parsed:
+                self.settings[parsed[0]] = parsed[1]
         self.rx = deque()
         self.writes = []
-        self.position = [-288.0, -301.0]
+        self.home = [-288.0, -301.0]
+        self.position = list(self.home)
         self.power = 0
         self.closed = False
 
+    @property
+    def max_power(self):
+        return self.settings.get(30, 1000)
+
+    @property
+    def soft_limits(self):
+        return bool(self.settings.get(20, 0))
+
     def read(self):
         return self.rx.popleft() if self.rx else b""
+
+    def status_line(self):
+        return ("<Idle|MPos:{:.3f},{:.3f},0.000|FS:0,{}|APP:51|USB:0>\n"
+                .format(self.position[0], self.position[1], self.power))
+
+    def travel_error(self, x, y):
+        """GRBL error:15 when soft limits are on and a target leaves the table.
+
+        The fixture reports ``$20=0``, so this returns None and the machine
+        accepts the move. That is deliberate: the controller is what must refuse
+        it, and a test can only prove that if the simulator does not.
+        """
+        if not self.soft_limits:
+            return None
+        span_x = self.settings.get(130, 365.0)
+        span_y = self.settings.get(131, 305.0)
+        if not (self.home[0] <= x <= self.home[0] + span_x
+                and self.home[1] <= y <= self.home[1] + span_y):
+            return "error:15\n"
+        return None
 
     def write(self, data):
         if self.closed:
             raise OSError("Simulator disconnected")
         self.writes.append(data)
-        command = data.decode("ascii", errors="replace").strip()
-        response = ""
-        if data == b"?":
-            response = f"<Idle|MPos:{self.position[0]:.3f},{self.position[1]:.3f},0.000|FS:0,{self.power}|APP:51|USB:0>\n"
-        elif command == "$I":
-            response = "[VER:V1.055.Oct 13 2023:]\n[OPT:HLSW,512,2048]\nok\n"
-        elif command == "$$":
-            response = "\n".join(x for x in self.fixture.splitlines() if x.startswith("$")) + "\nok\n"
-        elif command == "$#":
-            response = "[G54:0.000,0.000,0.000]\n[G92:0.000,0.000,0.000]\n[TLO:0.000]\nok\n"
-        elif command == "$G":
-            spindle = f"M4 S{self.power}" if self.power else "M5 S0"
-            response = f"[GC:G0 G54 G17 G21 G90 G94 {spindle} M9 T0 F0]\nok\n"
-        elif command in ("M5 S0", "M5", "S0"):
-            self.power = 0
-            response = "ok\n"
-        elif re.fullmatch(r"M4 S(?:[0-9]|[1-9][0-9]{1,2}|1000)", command):
-            self.power = int(command.split("S")[1])
-            response = "ok\n"
-        elif command in ("G21", "G90"):
-            response = "ok\n"
-        elif re.fullmatch(r"G53 G[01] X-?\d+(?:\.\d+)? Y-?\d+(?:\.\d+)?(?: F\d+)?", command):
-            match = re.search(r"X(-?\d+(?:\.\d+)?) Y(-?\d+(?:\.\d+)?)", command)
-            self.position = [float(match[1]), float(match[2])]
-            response = "ok\n"
-        elif command == "$H":
-            self.position = [-288.0, -301.0]
-            response = "<Home|MPos:-288,-301,0|FS:0,0>\nok\n"
-        elif command.startswith("$J="):
-            relative = re.fullmatch(r"\$J=G21 G91 ([XY])(-?(?:0\.100|1\.000|5\.000|10\.000)) F(?:180|300|600|1000|1200|3000|6000|12000|20000)", command)
-            absolute = re.fullmatch(r"\$J=G21 G90 G53 X(-?\d+(?:\.\d+)?) Y(-?\d+(?:\.\d+)?) F(?:180|300|600|1000|1200|3000|6000|12000|20000)", command)
-            if relative:
-                self.position[0 if relative[1] == "X" else 1] += float(relative[2])
-                response = "ok\n"
-            elif absolute:
-                self.position = [float(absolute[1]), float(absolute[2])]
-                response = "ok\n"
-            else:
-                response = "error:20\n"
-        elif data == b"\x18":
-            response = "Grbl 1.1h ['$' for help]\n"
-        elif data in (b"\x85", b"!", b"~"):
-            pass
-        else:
-            response = "error:20\n"
+        response = self.respond(data, data.decode("ascii", errors="replace").strip())
         if response:
             self.rx.append(response.encode())
+
+    def respond(self, data, command):
+        if data == b"?":
+            return self.status_line()
+        if data == b"\x18":
+            self.position = list(self.home)
+            self.power = 0
+            return "Grbl 1.1h ['$' for help]\n"
+        if data in (b"\x85", b"!", b"~"):
+            return ""
+        if command == "$I":
+            return "[VER:V1.055.Oct 13 2023:]\n[OPT:HLSW,512,2048]\nok\n"
+        if command == "$$":
+            settings = "\n".join(x for x in self.fixture.splitlines() if x.startswith("$"))
+            return settings + "\nok\n"
+        if command == "$#":
+            return "[G54:0.000,0.000,0.000]\n[G92:0.000,0.000,0.000]\n[TLO:0.000]\nok\n"
+        if command == "$G":
+            spindle = "M4 S{}".format(self.power) if self.power else "M5 S0"
+            return "[GC:G0 G54 G17 G21 G90 G94 {} M9 T0 F0]\nok\n".format(spindle)
+        if command == "$H":
+            self.position = list(self.home)
+            self.power = 0
+            return "<Home|MPos:{:g},{:g},0|FS:0,0>\nok\n".format(*self.home)
+        if command in ("M5", "S0", "M5 S0"):
+            self.power = 0
+            return "ok\n"
+        if command in ("G21", "G90", "G91", "G54", "G94"):
+            return "ok\n"
+
+        spindle = self.SPINDLE.fullmatch(command)
+        if spindle:
+            # GRBL clamps to $30 rather than refusing an over-range speed.
+            self.power = min(int(spindle[2]), int(self.max_power))
+            return "ok\n"
+
+        move = self.MOVE.fullmatch(command)
+        if move:
+            return self.go(float(move[2]), float(move[3]))
+
+        absolute = self.JOG_ABSOLUTE.fullmatch(command)
+        if absolute:
+            return self.go(float(absolute[1]), float(absolute[2]))
+
+        relative = self.JOG_RELATIVE.fullmatch(command)
+        if relative:
+            axis, delta = relative[1], float(relative[2])
+            if axis == "Z":
+                return "ok\n"
+            target = list(self.position)
+            target[0 if axis == "X" else 1] += delta
+            return self.go(*target)
+
+        return "error:20\n"
+
+    def go(self, x, y):
+        error = self.travel_error(x, y)
+        if error:
+            return error
+        self.position = [x, y]
+        return "ok\n"
 
     def close(self):
         self.closed = True
