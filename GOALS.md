@@ -10,6 +10,8 @@ controller knows exactly one machine, has its `$$` dump checked into the repo as
 fixture, and refuses to move when the live settings disagree with it. Narrowing the
 target buys guarantees LightBurn cannot offer.
 
+This document is the authority on scope. Where `ROADMAP.md` disagrees, this file wins.
+
 ## What success looks like
 
 A normal working session goes: open the app, connect, home, confirm the head is at
@@ -58,27 +60,63 @@ future Wi-Fi transport to this same machine.
 
 No camera alignment, no galvo support, no rotary until the core is boringly reliable.
 
-## Feature parity targets
+No multi-user features, no licensing, no plugin system. One operator, one machine.
 
-Working now: connection and profile verification, normalized bottom-left coordinates,
-guarded Home, Jog, Frame, direct job streaming with pause and resume, STOP/RESET,
-rectangles, ellipses, lines, vector text, burn tests, material presets, direct
-manipulation with undo and redo, snapping, alignment, layer order, zoom and pan,
-project files, job preview with time and distance estimates, and multi-selection with
-group transforms.
+## Where this stands against LightBurn
 
-Still needed for the daily-use bar, roughly in order:
+Verified against the code, not against `ROADMAP.md`, which is out of date on rotation.
 
-1. Rotation and mirroring with transformed bounds and exact output paths.
-2. SVG import with curves flattened at a controlled tolerance, then DXF.
-3. Named cut layers sharing speed, power, and pass count, with output toggles.
-4. Dirty state, autosave, crash recovery, recent files, and project migration tests.
-5. Richer text layout, kerning, text on a path, welding and boolean operations.
-6. Job origin modes, array copies, and repeatable production runs.
-7. Calibration and focus tests, plus a guided first-run setup.
+| Capability | Status | Notes |
+| --- | --- | --- |
+| Connect, verify profile, read firmware | Done | Five read-only commands, no writes |
+| Home with physical confirmation | Done | Confirmation gate has no LightBurn equivalent |
+| Jog, click-to-jog, arrow targets | Done | Every path through one guard |
+| Frame outline | Done | Laser off, 2 mm margin, verified endpoints |
+| Send job, pause, resume, stop | Done | Whitelist grammar, verified final endpoint |
+| Rectangle, ellipse, line | Done | |
+| Vector text | Done | Arial, Segoe UI, Consolas, flattened contours |
+| Burn test grid | Done | Speed by column, power by row |
+| Material presets | Done | Speed, power, passes, saved to APPDATA |
+| Direct manipulation, undo, redo, snapping | Done | 100-step history |
+| Alignment, distribution, multi-selection | Done | Group bounds clamped to the bed |
+| Rotate 90 degrees, flip H and V | Done | Bounds enforced on the transformed path |
+| Z-order (bring forward, send backward) | Done | This is stacking order, not cut layers |
+| Zoom, pan, fit | Done | Cursor-anchored zoom fixed 2026-09-04 |
+| Project files | Done | Open and save, no dirty-state tracking |
+| Job preview with time and distance | Done | Separate read-only window |
+| Named cut layers | Missing | The largest gap. See below |
+| SVG import | Missing | Blocks every design not drawn in-app |
+| DXF import | Missing | |
+| Arbitrary-angle rotation | Missing | Model stores any angle; UI offers only 90 |
+| Dirty state, autosave, crash recovery | Missing | Unsaved work is currently lost silently |
+| Recent files | Missing | |
+| Kerning, text on a path | Missing | |
+| Weld and boolean operations | Missing | |
+| Job origin modes, array copies | Missing | |
+| Rotary | Out of scope for now | |
+| Camera alignment | Out of scope | |
+| Print and cut, node editing, offsets | Out of scope | |
 
-Item 3 is the one that matters most for real work. Cutting and engraving the same
-design at different settings in one job is the difference between a toy and a tool.
+Named cut layers is first because it is the difference between a toy and a tool.
+Cutting an outline at one speed and power while engraving the inside at another, in a
+single job, is what most real work needs. Everything today shares one setting per
+shape and one send, so any two-operation design means two jobs and a re-registration.
+
+SVG import is second and for the same reason: without it, only designs drawn inside
+this app can be cut, which rules out anything from a vector editor.
+
+## Delivery order
+
+1. Named cut layers with shared speed, power and pass count, plus output toggles.
+2. SVG import with curves flattened at a controlled tolerance.
+3. Dirty state, autosave, crash recovery, recent files, and project migration tests.
+4. Arbitrary-angle rotation in the UI, since the model already carries the angle.
+5. DXF import.
+6. Richer text layout, kerning, text on a path, weld and boolean operations.
+7. Job origin modes and array copies for repeat production.
+8. Calibration and focus tests, plus a guided first-run setup.
+
+Items 1 through 3 are what daily use actually requires. Everything after is comfort.
 
 ## What personalization actually buys
 
@@ -92,6 +130,33 @@ to the machine in a workshop. That is why the layout is a single window with con
 state always visible, why there is no onboarding wizard, and why STOP is red and never
 scrolls away.
 
+## Constraints
+
+Windows desktop only. Python 3.12, Tkinter, pyserial, packaged with PyInstaller into a
+single executable that runs without a Python install.
+
+No third-party runtime beyond pyserial and fonttools. Every dependency added is a
+dependency that has to be trusted with a machine that can start a fire.
+
+The transport boundary in `transports.py` stays narrow enough that a Wi-Fi adapter can
+implement `read`, `write` and `close` without the controller changing.
+
+The operator is the author. There is no support burden, no backwards-compatibility
+promise to strangers, and no reason to keep a feature that stopped being useful.
+
+## Non-functional goals
+
+The app opens and is usable in under three seconds from a cold double-click.
+
+A job that is running must never be blocked by the UI. Status polling and command
+serialisation already share one queue; that must stay true as features land.
+
+No silent data loss. Once item 3 in the delivery order is done, closing the app with
+unsaved work must warn, and a crash must leave a recoverable file.
+
+Failures are loud and specific. Every refusal names the condition that failed, because
+a message like "not ready" costs the operator a diagnostic session.
+
 ## How we know it works
 
 Three checks gate every release, and all three have to pass.
@@ -101,14 +166,45 @@ Packaged-executable verification launches the real `.exe`, confirms it opens no 
 ports in demo mode, and records its SHA256. A read-only soak against the physical
 controller on COM3 watches status reports without commanding motion.
 
-Two known weaknesses in that scheme, both open:
+A change is done when the tests pass, the packaged executable launches, and anything
+visual has been looked at in a running window. Test output alone is not evidence for
+UI work.
 
-The simulator was written alongside the controller and accepts exactly what the
-controller emits, so a passing test proves the two files agree, not that V1.055 agrees
-with either. Replaying recorded bytes from the real machine would fix this.
+## Known gaps in the verification story
 
-`ui.py` is about 43 percent of the source and almost none of it is tested. The
-controller rejects invalid requests, but it cannot tell a valid wrong coordinate from a
-valid right one, so any bug in the UI's coordinate math reaches the machine unchallenged.
+The simulator in `transports.py` was written alongside the controller and accepts
+exactly what the controller emits, down to the hardcoded feed and distance lists. A
+passing test proves the two files agree, not that V1.055 agrees with either. Replaying
+recorded bytes from the real machine would close this. Until then, "verified" means
+verified in simulation.
 
-Until both are closed, "verified" means verified in simulation.
+Motion on real hardware has never been validated. The only hardware evidence is a
+60-second read-only soak. Jog, Frame and job streaming have been exercised against the
+simulator alone.
+
+Verification artifacts in the repo root are pasted transcripts. Nothing regenerates
+them and nothing fails when they go stale, and at least one already has:
+`test-results.txt` claims 83 tests when the suite collects 132. A stale PASS is worse
+than no PASS.
+
+`ui.py` is the largest file and most of it is still untested. The coordinate math was
+extracted into `viewport.py` and covered, which found a real zoom bug, but widget
+state, the inspector, project file round-trips and the job send path have no automated
+coverage.
+
+## Open questions
+
+How should a cut layer relate to the material presets that already exist? A preset is
+speed, power and passes, which is the same triple a layer needs. They should probably
+be one concept rather than two.
+
+Should SVG import flatten curves at a fixed tolerance or one the operator sets? A fixed
+value is simpler and harder to get wrong.
+
+The negative machine coordinates at home, roughly MPos (-288, -301), are a user
+observation and not a calibration. Nothing depends on the exact values today. Before
+job origin modes land, that needs to be either measured properly or designed around.
+
+Is a read-only hardware soak enough to keep claiming safety, or does the project need a
+supervised motion test with the laser physically disconnected? The safety contract is
+currently argued from code review rather than from evidence.

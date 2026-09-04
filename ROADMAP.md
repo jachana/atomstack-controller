@@ -1,5 +1,9 @@
 # Product roadmap: toward LightBurn-quality daily use
 
+> Superseded by GOALS.md, which carries the current scope and the verified
+> parity table. The delivery sequence below is out of date: rotation and
+> mirroring shipped and are still listed as pending.
+
 The target is workflow quality comparable to LightBurn for this Atomstack X10/A10,
 while keeping the controller deliberately narrower and safer around the observed
 vendor firmware.
