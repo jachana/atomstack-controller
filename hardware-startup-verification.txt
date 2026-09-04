@@ -1,0 +1,122 @@
+PASS: corrected startup and repeated status polls on physical Atomstack V1.055.
+Read diagnostics plus M5 S0 only. No homing, jogs, settings writes or laser firing.
+Firmware: V1.055.Oct 13 2023
+Machine position: (0.0, 0.0)
+State: Idle; power: 0.0; home reference: None
+G54: 288.005,301.090,0.000
+
+TX b'$I\n'  [hex: 24 49 0a]
+RX [VER:V1.055.Oct 13 2023:]
+RX [OPT:HLSW,512,2048]
+RX [MSG: network details omitted]
+RX [MSG: network details omitted]
+RX ok
+TX b'?\n'  [hex: 3f 0a]
+RX <Idle|MPos:0.000,0.000,0.000|FS:0,0|APP:51|USB:0>
+RX ok
+TX b'$$\n'  [hex: 24 24 0a]
+RX $0=1
+RX $1=25
+RX $2=0
+RX $3=0
+RX $4=0
+RX $5=1
+RX $6=0
+RX $10=1
+RX $11=0.010
+RX $12=0.002
+RX $13=0
+RX $20=0
+RX $21=1
+RX $22=1
+RX $23=3
+RX $24=300.000
+RX $25=3000.000
+RX $26=250.000
+RX $27=3.000
+RX $30=1000.000
+RX $31=50.000
+RX $32=1
+RX $100=99.900
+RX $101=100.000
+RX $102=3200.000
+RX $103=100.000
+RX $104=100.000
+RX $105=100.000
+RX $110=50000.000
+RX $111=20000.000
+RX $112=200.000
+RX $113=1000.000
+RX $114=1000.000
+RX $115=1000.000
+RX $120=4000.000
+RX $121=1000.000
+RX $122=100.000
+RX $123=200.000
+RX $124=200.000
+RX $125=200.000
+RX $130=365.000
+RX $131=305.000
+RX $132=40.000
+RX $133=300.000
+RX $134=300.000
+RX $135=300.000
+RX ok
+TX b'$#\n'  [hex: 24 23 0a]
+RX [G54:288.005,301.090,0.000]
+RX [G55:0.000,0.000,0.000]
+RX [G56:0.000,0.000,0.000]
+RX [G57:0.000,0.000,0.000]
+RX [G58:0.000,0.000,0.000]
+RX [G59:0.000,0.000,0.000]
+RX [G28:0.000,0.000,0.000]
+RX [G30:0.000,0.000,0.000]
+RX [G92:0.000,0.000,0.000]
+RX [TLO:0.000]
+RX [PRB:0.000,0.000,0.000:0]
+RX ok
+TX b'$G\n'  [hex: 24 47 0a]
+RX [GC:G0 G54 G17 G21 G90 G94 M5 M9 T0 F0 S0]
+RX ok
+TX b'M5 S0\n'  [hex: 4d 35 20 53 30 0a]
+RX [MSG:left offset :0]
+RX ok
+TX b'$G\n'  [hex: 24 47 0a]
+RX [GC:G0 G54 G17 G21 G90 G94 M5 M9 T0 F0 S0]
+RX ok
+TX b'?\n'  [hex: 3f 0a]
+RX <Idle|MPos:0.000,0.000,0.000|FS:0,0|APP:51|USB:0>
+RX ok
+TX b'?\n'  [hex: 3f 0a]
+RX <Idle|MPos:0.000,0.000,0.000|FS:0,0|APP:51|USB:0>
+RX ok
+TX b'?\n'  [hex: 3f 0a]
+RX <Idle|MPos:0.000,0.000,0.000|FS:0,0|APP:51|USB:0>
+RX ok
+TX b'?\n'  [hex: 3f 0a]
+RX <Idle|MPos:0.000,0.000,0.000|FS:0,0|APP:51|USB:0>
+RX ok
+TX b'?\n'  [hex: 3f 0a]
+RX <Idle|MPos:0.000,0.000,0.000|FS:0,0|APP:51|USB:0>
+RX ok
+TX b'?\n'  [hex: 3f 0a]
+RX <Idle|MPos:0.000,0.000,0.000|FS:0,0|APP:51|USB:0>
+RX ok
+TX b'?\n'  [hex: 3f 0a]
+RX <Idle|MPos:0.000,0.000,0.000|FS:0,0|WCO:288.005,301.090,0.000|APP:51|USB:0>
+RX ok
+TX b'?\n'  [hex: 3f 0a]
+RX <Idle|MPos:0.000,0.000,0.000|FS:0,0|Ov:100,100,100|APP:51|USB:0>
+RX ok
+TX b'?\n'  [hex: 3f 0a]
+RX <Idle|MPos:0.000,0.000,0.000|FS:0,0|APP:51|USB:0>
+RX ok
+TX b'?\n'  [hex: 3f 0a]
+RX <Idle|MPos:0.000,0.000,0.000|FS:0,0|APP:51|USB:0>
+RX ok
+TX b'?\n'  [hex: 3f 0a]
+RX <Idle|MPos:0.000,0.000,0.000|FS:0,0|APP:51|USB:0>
+RX ok
+TX b'?\n'  [hex: 3f 0a]
+RX <Idle|MPos:0.000,0.000,0.000|FS:0,0|APP:51|USB:0>
+RX ok

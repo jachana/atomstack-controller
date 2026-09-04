@@ -1,0 +1,2 @@
+PASS: created rectangle, circle, vector text, and burn-test grid; rendered and traced the orange frame; sent the generated job directly.
+Frame sent no laser command. The direct simulated job used M4 and ended at M5/S0 with zero power.

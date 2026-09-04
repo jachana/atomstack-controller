@@ -1,0 +1,2 @@
+pyserial==3.5
+fonttools==4.59.1

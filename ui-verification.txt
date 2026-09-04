@@ -1,0 +1,19 @@
+PASS
+Simulator diagnostics complete
+Home enabled after verified M5/S0
+Jogs locked before home
+Native window capture succeeded
+Home remains available while idle
+Home awaits physical confirmation
+Confirmed home displays app zero
+X positive button moves exactly 1 mm in simulator
+Clicking the bed jogs to the pointed X/Y position
+Design objects appear in the machine navigator
+Mouse wheel zooms the machine bed
+Reset zoom restores the full bed
+TR moves to the selected object's top-right point
+Repeated arrow presses accumulate into one pending target
+Buffered arrow target is reached with one guarded jog
+Native window capture succeeded
+Native window capture succeeded
+Stop closes simulated session

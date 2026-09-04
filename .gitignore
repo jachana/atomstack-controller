@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Test / tool caches
+.pytest_cache/
+.impeccable/
+
+# PyInstaller build output
+build/
+dist/
+*.spec
+
+# Packaged executables (delivery artifacts, not source)
+*.exe
+
+# Local machine reports produced by live runs
+live-connection.json
+live-executable-verification.json
+terminal-live-report.json
+terminal-report.json

@@ -1,0 +1,1 @@
+PASS: Home, four jog controls, and five diagnostic controls stayed enabled across 50 UI samples / 2 seconds while status polling continued.

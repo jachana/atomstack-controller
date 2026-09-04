@@ -1,0 +1,229 @@
+"""Geometry document and deterministic GRBL-compatible job generation."""
+from dataclasses import dataclass, replace
+from functools import lru_cache
+import math
+from .vector_text import FONT_FILES, text_paths
+
+BED_X, BED_Y = 365.0, 305.0
+
+
+@dataclass(frozen=True)
+class Shape:
+    kind: str
+    x: float
+    y: float
+    width: float
+    height: float
+    speed: int = 1000
+    power: int = 300
+    passes: int = 1
+    text: str = ""
+    font_family: str = "Arial"
+    note: str = ""
+    rotation: float = 0.0
+    mirror_x: bool = False
+    mirror_y: bool = False
+
+    def validated(self):
+        values = (self.x, self.y, self.width, self.height)
+        if not all(math.isfinite(v) for v in values):
+            raise ValueError("Geometry values must be finite numbers.")
+        if self.kind not in ("rectangle", "circle", "line", "text"):
+            raise ValueError("Unknown geometry type.")
+        if self.kind == "line":
+            if self.width < 0 or self.height < 0 or (self.width == 0 and self.height == 0):
+                raise ValueError("A line needs a non-zero horizontal or vertical length.")
+        elif self.width <= 0 or self.height <= 0:
+            raise ValueError("Width and height must be greater than zero.")
+        if not 60 <= self.speed <= 20000:
+            raise ValueError("Speed must be between 60 and 20,000 mm/min.")
+        if not 0 <= self.power <= 1000:
+            raise ValueError("Power must be between 0 and 1000.")
+        if not 1 <= self.passes <= 20:
+            raise ValueError("Passes must be between 1 and 20.")
+        if self.kind == "text":
+            if not self.text or not self.text.strip() or len(self.text) > 80:
+                raise ValueError("Text must contain 1–80 characters.")
+            if not all(character.isprintable() for character in self.text):
+                raise ValueError("Text must fit on one line and contain printable characters only.")
+            if self.font_family not in FONT_FILES:
+                raise ValueError("Choose Arial, Segoe UI, or Consolas.")
+        if not math.isfinite(self.rotation):
+            raise ValueError("Rotation must be a finite angle.")
+        if not isinstance(self.mirror_x, bool) or not isinstance(self.mirror_y, bool):
+            raise ValueError("Mirror values must be true or false.")
+        left, bottom, right, top = shape_bounds(self)
+        tolerance = 1e-7
+        if left < -tolerance or bottom < -tolerance or right > BED_X+tolerance or top > BED_Y+tolerance:
+            raise ValueError("Transformed geometry must fit inside the 365 × 305 mm bed.")
+        return self
+
+    @property
+    def label(self):
+        angle = self.rotation % 360
+        transform = f" · {angle:g}°" if angle else ""
+        if self.mirror_x or self.mirror_y:
+            transform += " · mirrored"
+        if self.kind == "text":
+            return f"Text · {self.text[:20]} · X {self.x:g} Y {self.y:g}{transform}"
+        if self.note:
+            return f"Test · {self.note}"
+        return f"{self.kind.title()} · X {self.x:g} Y {self.y:g} · {self.width:g} × {self.height:g}{transform}"
+
+
+class Document:
+    def __init__(self):
+        self.shapes = []
+
+    def add(self, shape):
+        self.shapes.append(shape.validated())
+        return len(self.shapes) - 1
+
+    def update(self, index, **changes):
+        self.shapes[index] = replace(self.shapes[index], **changes).validated()
+
+    def delete(self, index):
+        del self.shapes[index]
+
+    def add_burn_test(self, x, y, cell_width, cell_height, speeds, powers, gap=2.0):
+        if not speeds or not powers or len(speeds) > 10 or len(powers) > 10:
+            raise ValueError("Burn test requires 1–10 speeds and 1–10 power levels.")
+        if cell_width < 5 or cell_height < 5 or gap < 0:
+            raise ValueError("Test cells must be at least 5 mm; gap cannot be negative.")
+        indices = []
+        candidates = []
+        for row, power in enumerate(powers):
+            for column, speed in enumerate(speeds):
+                candidates.append(Shape("rectangle", x + column*(cell_width+gap), y + row*(cell_height+gap),
+                                              cell_width, cell_height, int(speed), int(power), 1,
+                                              note=f"F{int(speed)} · S{int(power)}").validated())
+        for shape in candidates:
+            indices.append(self.add(shape))
+        return indices
+
+    def frame_points(self, margin=2.0):
+        if not self.shapes:
+            raise ValueError("Add geometry before framing.")
+        if not math.isfinite(margin) or margin < 0 or margin > 20:
+            raise ValueError("Frame margin must be between 0 and 20 mm.")
+        bounds = [shape_bounds(shape) for shape in self.shapes]
+        left = max(0.0, min(value[0] for value in bounds) - margin)
+        bottom = max(0.0, min(value[1] for value in bounds) - margin)
+        right = min(BED_X, max(value[2] for value in bounds) + margin)
+        top = min(BED_Y, max(value[3] for value in bounds) + margin)
+        return ((left, bottom), (right, bottom), (right, top), (left, top), (left, bottom))
+
+    def gcode(self, machine_origin=None):
+        if not self.shapes:
+            raise ValueError("Add geometry before exporting G-code.")
+        if machine_origin is None or len(machine_origin) != 2 or not all(math.isfinite(v) for v in machine_origin):
+            raise ValueError("A confirmed live machine origin is required for safe G-code export.")
+        ox, oy = machine_origin
+        lines = ["; Atomstack personal controller - machine-coordinate export",
+                 f"; Confirmed machine origin: X{ox:.3f} Y{oy:.3f}", "G21", "G90", "M5", "S0"]
+        for index, shape in enumerate(self.shapes, 1):
+            shape.validated()
+            paths = shape_paths(shape)
+            safe_text = shape.text.encode("ascii", "replace").decode("ascii")
+            description = f"text '{safe_text}'" if shape.kind == "text" else shape.kind
+            lines.append(f"; {index}: {description} X{shape.x:g} Y{shape.y:g} {shape.width:g}x{shape.height:g} - F{shape.speed} S{shape.power} - {shape.passes} pass(es)")
+            for pass_number in range(shape.passes):
+                lines.append(f"; pass {pass_number + 1}")
+                for points in paths:
+                    lines.extend((f"G53 G0 X{ox + points[0][0]:.3f} Y{oy + points[0][1]:.3f}", f"M4 S{shape.power}"))
+                    lines.extend(f"G53 G1 X{ox + x:.3f} Y{oy + y:.3f} F{shape.speed}" for x, y in points[1:])
+                    lines.extend(("M5", "S0"))
+        lines.extend(("M5", "S0", "; End - generated by Atomstack personal controller"))
+        return "\n".join(lines) + "\n"
+
+    def preview_segments(self, start=(0.0, 0.0)):
+        """Return the exact ordered rapid/burn geometry used by generated jobs."""
+        if not self.shapes:
+            raise ValueError("Add geometry before previewing.")
+        if len(start) != 2 or not all(math.isfinite(value) for value in start):
+            raise ValueError("Preview start must be a finite X/Y point.")
+        segments = []
+        current = tuple(start)
+        for shape_index, shape in enumerate(self.shapes):
+            shape.validated()
+            for pass_index in range(shape.passes):
+                for points in shape_paths(shape):
+                    first = points[0]
+                    if current != first:
+                        segments.append(("rapid", current, first, 6000, 0, shape_index, pass_index))
+                    for point in points[1:]:
+                        segments.append(("burn", first, point, shape.speed, shape.power, shape_index, pass_index))
+                        first = point
+                    current = first
+        return tuple(segments)
+
+    def job_metrics(self, start=(0.0, 0.0)):
+        segments = self.preview_segments(start)
+        rapid_distance = burn_distance = seconds = 0.0
+        for kind, first, second, feed, _power, _shape, _pass in segments:
+            distance = math.hypot(second[0] - first[0], second[1] - first[1])
+            if kind == "rapid":
+                rapid_distance += distance
+            else:
+                burn_distance += distance
+            seconds += distance / feed * 60
+        return {"segments": len(segments), "rapid_distance": rapid_distance,
+                "burn_distance": burn_distance, "estimated_seconds": seconds,
+                "max_power": max(shape.power for shape in self.shapes)}
+
+
+def path_points(shape):
+    return shape_paths(shape)[0]
+
+
+def _base_shape_paths(shape):
+    x, y, w, h = shape.x, shape.y, shape.width, shape.height
+    if shape.kind == "rectangle":
+        return [[(x, y), (x + w, y), (x + w, y + h), (x, y + h), (x, y)]]
+    if shape.kind == "line":
+        return [[(x, y), (x + w, y + h)]]
+    if shape.kind == "text":
+        return text_paths(shape.text, x, y, w, h, shape.font_family)
+    cx, cy = x + w / 2, y + h / 2
+    return [[(cx + w / 2 * math.cos(2 * math.pi * i / 72),
+              cy + h / 2 * math.sin(2 * math.pi * i / 72)) for i in range(73)]]
+
+
+@lru_cache(maxsize=512)
+def _cached_shape_paths(shape):
+    paths = _base_shape_paths(shape)
+    angle = math.radians(shape.rotation % 360)
+    cosine, sine = math.cos(angle), math.sin(angle)
+    cx, cy = shape.x + shape.width/2, shape.y + shape.height/2
+    transformed = []
+    for path in paths:
+        points = []
+        for x, y in path:
+            local_x, local_y = x-cx, y-cy
+            if shape.mirror_x:
+                local_x = -local_x
+            if shape.mirror_y:
+                local_y = -local_y
+            points.append((cx + local_x*cosine-local_y*sine,
+                           cy + local_x*sine+local_y*cosine))
+        transformed.append(tuple(points))
+    return tuple(transformed)
+
+
+def shape_paths(shape):
+    return [list(path) for path in _cached_shape_paths(shape)]
+
+
+def shape_bounds(shape):
+    points = [point for path in _cached_shape_paths(shape) for point in path]
+    def stable(value):
+        if abs(value) < 1e-10:
+            return 0.0
+        if abs(value-BED_X) < 1e-10:
+            return BED_X
+        if abs(value-BED_Y) < 1e-10:
+            return BED_Y
+        return value
+    return tuple(stable(value) for value in
+                 (min(point[0] for point in points), min(point[1] for point in points),
+                  max(point[0] for point in points), max(point[1] for point in points)))

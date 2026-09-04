@@ -1,0 +1,5 @@
+PASS: Standalone Windows executable opened in --demo mode and closed normally.
+Native window screenshot: preview-executable.png
+Hardware ports opened: none
+Bytes: 20254543
+SHA256: c345445d6e818b6879d872a18a428f0d569c26f96f54a92c86b5d88d74e087a9
