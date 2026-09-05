@@ -78,6 +78,15 @@ class Simulator:
         self.position = list(self.home)
         self.power = 0
         self.closed = False
+        # Feed hold. Real GRBL stops the planner and withholds the
+        # acknowledgement of any motion it has not finished, so a paused job
+        # goes quiet on the wire until the operator resumes.
+        self.holding = False
+        self.held = deque()
+        # Motion is not instantaneous: a move is acknowledged a few reads after
+        # it is accepted, and a held machine never finishes it at all.
+        self.moving_ok = None
+        self.moving_reads = 0
 
     @property
     def max_power(self):
@@ -87,12 +96,20 @@ class Simulator:
     def soft_limits(self):
         return bool(self.settings.get(20, 0))
 
+    MOTION_READS = 3
+
     def read(self):
+        if self.moving_ok and not self.holding:
+            self.moving_reads += 1
+            if self.moving_reads >= self.MOTION_READS:
+                self.rx.append(self.moving_ok)
+                self.moving_ok = None
         return self.rx.popleft() if self.rx else b""
 
     def status_line(self):
-        return ("<Idle|MPos:{:.3f},{:.3f},0.000|FS:0,{}|APP:51|USB:0>\n"
-                .format(self.position[0], self.position[1], self.power))
+        state = "Hold:0" if self.holding else "Idle"
+        return ("<{}|MPos:{:.3f},{:.3f},0.000|FS:0,{}|APP:51|USB:0>\n"
+                .format(state, self.position[0], self.position[1], self.power))
 
     def travel_error(self, x, y):
         """GRBL error:15 when soft limits are on and a target leaves the table.
@@ -124,9 +141,35 @@ class Simulator:
         if data == b"\x18":
             self.position = list(self.home)
             self.power = 0
+            self.holding = False
+            self.held.clear()
+            self.moving_ok = None
             return "Grbl 1.1h ['$' for help]\n"
-        if data in (b"\x85", b"!", b"~"):
+        if data == b"!":
+            self.holding = True
             return ""
+        if data == b"\x85":
+            # Jog cancel discards held motion instead of running it later.
+            self.holding = False
+            self.held.clear()
+            self.moving_ok = None
+            return ""
+        if data == b"~":
+            self.holding = False
+            responses = "".join(self.run(command) for command in self.held)
+            self.held.clear()
+            return responses
+        if self.holding and self.is_motion(command):
+            # Held motion is acknowledged only once it actually runs.
+            self.held.append(command)
+            return ""
+        return self.run(command)
+
+    def is_motion(self, command):
+        return any(pattern.fullmatch(command) for pattern
+                   in (self.MOVE, self.JOG_ABSOLUTE, self.JOG_RELATIVE))
+
+    def run(self, command):
         if command == "$I":
             return "[VER:V1.055.Oct 13 2023:]\n[OPT:HLSW,512,2048]\nok\n"
         if command == "$$":
@@ -177,7 +220,9 @@ class Simulator:
         if error:
             return error
         self.position = [x, y]
-        return "ok\n"
+        self.moving_ok = b"ok\n"
+        self.moving_reads = 0
+        return ""
 
     def close(self):
         self.closed = True

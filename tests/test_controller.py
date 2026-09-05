@@ -376,6 +376,27 @@ class SessionTests(unittest.TestCase):
         self.pump(80)
         self.assertEqual(self.c.phase, "idle")
 
+    def test_long_pause_keeps_the_session_alive_and_resumes(self):
+        """A held machine stops acknowledging, which must not read as a fault."""
+        self.home()
+        lines = ("G21", "G90", "M5", "S0", "G53 G0 X-287.000 Y-300.000",
+                 "M4 S100", "G53 G1 X-280.000 Y-300.000 F3000", "M5", "S0")
+        self.c.run_job(lines)
+        for _ in range(40):  # Pause with a move in flight, as an operator would.
+            self.pump(1)
+            if self.c.pending and self.c.pending.text.startswith("G53"):
+                break
+        self.assertTrue(self.c.pending and self.c.pending.text.startswith("G53"))
+        self.c.pause_job()
+        self.pump(400)  # 20 s held, well past the per-command timeout.
+        self.assertTrue(self.c.connected, self.c.message)
+        self.assertTrue(self.c.job_paused)
+        self.assertTrue(self.c.phase.startswith("job"), self.c.phase)
+        self.c.resume_job()
+        self.pump(80)
+        self.assertEqual(self.c.phase, "idle", self.c.message)
+        self.assertEqual(self.t.power, 0)
+
     def test_job_stops_on_excess_reported_power_or_wrong_final_position(self):
         self.home()
         self.c.phase = "job-command"

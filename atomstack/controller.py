@@ -421,7 +421,15 @@ class Controller:
             raise GuardError("No paused job is available to resume.")
         self._write(b"~")
         self.job_paused = False
-        self._start_job_command()
+        # The held time is not evidence of a stuck machine: give the in-flight
+        # command and the job as a whole a fresh window from the resume.
+        now = self.clock()
+        self.sent_at = now
+        self.motion_deadline = now + 3600
+        # An in-flight command still owes its acknowledgement, and that
+        # acknowledgement is what sends the next one.
+        if not self.pending and not self.queue:
+            self._start_job_command()
 
     def _inside(self, xy):
         """Bounds check against the machine's reported travel, never a constant.
@@ -460,12 +468,16 @@ class Controller:
                 # Explicitly disarm; verify via $G and FS, without changing firmware settings.
                 for cmd in ("$I", "?", "$$", "$#", "$G"):
                     self._enqueue(cmd, "init-modal" if cmd == "$G" else cmd)
-            if self.pending and now - self.sent_at > self.pending.timeout:
-                self.fault(f"Timed out waiting for {self.pending.text}.")
-                return
-            if now > self.motion_deadline:
-                self.fault("Motion completion could not be verified.")
-                return
+            # A held machine stops acknowledging the move it did not finish, so
+            # an operator pause must not be read as a silent controller.
+            # resume_job() restarts both clocks.
+            if not self.job_paused:
+                if self.pending and now - self.sent_at > self.pending.timeout:
+                    self.fault(f"Timed out waiting for {self.pending.text}.")
+                    return
+                if now > self.motion_deadline:
+                    self.fault("Motion completion could not be verified.")
+                    return
             if self.origin is not None and self.phase in ("idle", "home-confirm") and now - self.status_at > 1.5:
                 self.fault("Position updates stopped; home reference discarded.")
                 return

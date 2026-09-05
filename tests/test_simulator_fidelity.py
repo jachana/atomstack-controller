@@ -25,13 +25,15 @@ class Clock:
 
 
 def responses(sim, command):
+    """Drain the wire. A move is acknowledged a few reads after it is accepted."""
     sim.write(command if isinstance(command, bytes) else (command + "\n").encode())
     out = b""
-    while True:
+    quiet = 0
+    while quiet < sim.MOTION_READS + 2:
         chunk = sim.read()
-        if not chunk:
-            return out.decode()
+        quiet = 0 if chunk else quiet + 1
         out += chunk
+    return out.decode()
 
 
 class FixtureFidelity(unittest.TestCase):
@@ -97,6 +99,20 @@ class AcceptsWhatTheFirmwareAccepts(unittest.TestCase):
         self.assertEqual(responses(self.sim, b"\x18"), "Grbl 1.1h ['$' for help]\n")
         self.assertEqual(self.sim.position, self.sim.home)
         self.assertEqual(self.sim.power, 0)
+
+    def test_a_feed_hold_withholds_the_acknowledgement_until_resume(self):
+        """A held machine goes quiet: the unfinished move is not acknowledged."""
+        self.sim.write(b"!")
+        self.assertIn("Hold:0", responses(self.sim, b"?"))
+        self.assertEqual(responses(self.sim, "G53 G1 X-200.000 Y-150.000 F1000"), "")
+        self.assertEqual(responses(self.sim, b"~"), "ok\n")
+        self.assertIn("Idle", responses(self.sim, b"?"))
+
+    def test_a_hold_then_jog_cancel_discards_the_unfinished_move(self):
+        self.sim.write(b"!")
+        responses(self.sim, "G53 G1 X-200.000 Y-150.000 F1000")
+        self.assertEqual(responses(self.sim, b"\x85"), "")
+        self.assertEqual(self.sim.position, self.sim.home)
 
     def test_status_reports_the_live_position_and_power(self):
         responses(self.sim, "M4 S250")
