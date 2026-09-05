@@ -17,7 +17,8 @@ from .materials import MaterialLibrary, MaterialPreset
 from .viewport import (
     anchor_point, arrow_target, clamp_to_bed, clamp_zoom, corner_handles, fit_viewport,
     handle_at as handle_hit, inside_bed, snap_value, topmost_at,
-    zoom_pan_correction,
+    zoom_pan_correction, ROTATE_HANDLE, resize_from_handle, rotated_handles,
+    rotation_from_pointer, transformed_point,
 )
 
 
@@ -1650,10 +1651,17 @@ class GeometryWindow:
             return None
         x, y = self.to_bed(event, clamp=False)
         shape = self.document.shapes[self.selected]
-        if shape.rotation % 360:
-            return None
-        handles = corner_handles(shape.x, shape.y, shape.width, shape.height)
-        return handle_hit(x, y, handles, self.transform().millimetres(9))
+        return handle_hit(x, y, self.shape_handles(shape), self.transform().millimetres(9))
+
+    def shape_handles(self, shape):
+        """Handle positions in bed millimetres, following any rotation applied.
+
+        The grip sits a constant distance from the edge on screen, so it stays
+        reachable whatever the zoom.
+        """
+        return rotated_handles((shape.x, shape.y, shape.width, shape.height), shape.rotation,
+                               shape.mirror_x, shape.mirror_y,
+                               rotation_gap=self.transform().millimetres(22))
 
     def begin_design_change(self):
         if self.interaction and not self.interaction.get("changed"):
@@ -1691,7 +1699,8 @@ class GeometryWindow:
             indices = self.selected_indices()
             originals = {item: self.document.shapes[item] for item in indices}
             self.load_selected_fields()
-            self.interaction = {"mode": "resize" if handle else "move", "handle": handle,
+            mode = "rotate" if handle == ROTATE_HANDLE else "resize" if handle else "move"
+            self.interaction = {"mode": mode, "handle": handle,
                                 "start": self.to_bed(event), "shape": self.document.shapes[index],
                                 "indices": indices, "shapes": originals,
                                 "snapshot": self.snapshot(), "changed": False}
@@ -1703,7 +1712,7 @@ class GeometryWindow:
         if self.interaction and self.interaction.get("mode") == "pan":
             self.pan_drag(event)
             return
-        if self.interaction and self.interaction.get("mode") in ("move", "resize"):
+        if self.interaction and self.interaction.get("mode") in ("move", "resize", "rotate"):
             current = self.to_bed(event)
             original = self.interaction["shape"]
             if self.interaction["mode"] == "move":
@@ -1721,17 +1730,19 @@ class GeometryWindow:
                     dy = max(-bottom, min(BED_Y-top, dy))
                 candidates = {index: {"x": shape.x+dx, "y": shape.y+dy}
                               for index, shape in self.interaction["shapes"].items()}
+            elif self.interaction["mode"] == "rotate":
+                # Snapping means exact angles here, not grid millimetres.
+                angle = rotation_from_pointer(current, (original.x, original.y, original.width, original.height),
+                                              original.mirror_y, step=15 if self.snap_enabled.get() else 0)
+                candidates = {self.selected: {"rotation": angle}}
             else:
-                opposite = {"BL": (original.x+original.width, original.y+original.height),
-                            "BR": (original.x, original.y+original.height),
-                            "TL": (original.x+original.width, original.y),
-                            "TR": (original.x, original.y)}[self.interaction["handle"]]
-                cx, cy = self.snap(current[0]), self.snap(current[1])
-                candidate = {"x": min(cx, opposite[0]), "y": min(cy, opposite[1]),
-                             "width": abs(cx-opposite[0]), "height": abs(cy-opposite[1])}
-                if original.kind != "line":
-                    candidate["width"] = max(0.1, candidate["width"])
-                    candidate["height"] = max(0.1, candidate["height"])
+                # The opposite corner anchors the drag, so a rotated object
+                # grows along its own axes rather than the bed's.
+                box = (original.x, original.y, original.width, original.height)
+                candidate = resize_from_handle(self.interaction["handle"],
+                                               (self.snap(current[0]), self.snap(current[1])),
+                                               box, original.rotation, original.mirror_x, original.mirror_y,
+                                               minimum=0.0 if original.kind == "line" else 0.1)
                 candidates = {self.selected: candidate}
             self.begin_design_change()
             try:
@@ -1762,7 +1773,7 @@ class GeometryWindow:
         if self.interaction and self.interaction.get("mode") == "pan":
             self.pan_release(event)
             return
-        if self.interaction and self.interaction.get("mode") in ("move", "resize"):
+        if self.interaction and self.interaction.get("mode") in ("move", "resize", "rotate"):
             changed = self.interaction.get("changed")
             self.interaction = None
             self.refresh("Object updated." if changed else "Object selected.")
@@ -1838,11 +1849,21 @@ class GeometryWindow:
                 self.bed.create_text((left+right)/2, (top+bottom)/2,
                                      text=shape.note.replace(" · ", "\n"), justify="center",
                                      fill="#20333d", font=("Segoe UI", 7))
-            if index == self.selected and len(selected_indices) == 1 and not shape.rotation % 360:
-                handle_left, handle_right = x0+shape.x*scale, x0+(shape.x+shape.width)*scale
-                handle_bottom, handle_top = y0-shape.y*scale, y0-(shape.y+shape.height)*scale
-                for hx, hy in ((handle_left, handle_bottom), (handle_right, handle_bottom),
-                               (handle_left, handle_top), (handle_right, handle_top)):
+            if index == self.selected and len(selected_indices) == 1:
+                handles = self.shape_handles(shape)
+                grip = handles.pop(ROTATE_HANDLE, None)
+                if grip:
+                    # A stalk from the middle of the top edge, wherever rotation
+                    # and mirroring have put that edge.
+                    edge = transformed_point((shape.x, shape.y, shape.width, shape.height),
+                                             shape.rotation, shape.mirror_x, shape.mirror_y,
+                                             (0, shape.height/2))
+                    gx, gy = x0+grip[0]*scale, y0-grip[1]*scale
+                    self.bed.create_line(x0+edge[0]*scale, y0-edge[1]*scale, gx, gy,
+                                         fill="#155eef", width=1, dash=(3, 2))
+                    self.bed.create_oval(gx-5, gy-5, gx+5, gy+5, fill="white", outline="#155eef", width=2,
+                                         tags=("rotate-handle",))
+                for hx, hy in ((x0+point[0]*scale, y0-point[1]*scale) for point in handles.values()):
                     self.bed.create_rectangle(hx-5, hy-5, hx+5, hy+5, fill="white", outline="#155eef", width=2,
                                               tags=("resize-handle",))
         if len(selected_indices) > 1:

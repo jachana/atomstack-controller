@@ -22,6 +22,7 @@ except ImportError:
     tk = None
 
 from atomstack.geometry import BED_X, BED_Y, Shape, shape_bounds
+from atomstack.viewport import ROTATE_HANDLE
 
 
 def fake_event(x, y):
@@ -165,16 +166,55 @@ class CanvasBehaviour(unittest.TestCase):
         self.app.draw_bed()
         self.app.geometry.draw()
 
-    def test_rotated_selection_shows_exact_bounds_without_inactive_resize_handles(self):
+    def test_rotated_selection_shows_exact_bounds_and_handles_on_its_own_corners(self):
         editor = self.app.geometry
         editor.document.shapes.append(Shape("rectangle", 10, 20, 40, 10, rotation=90))
         editor.set_selection((0,), 0)
         editor.refresh()
         self.assertEqual(editor.bounds_text.get(), "Transformed bounds · L 25 · B 5 · R 35 · T 45")
-        self.assertEqual(editor.bed.find_withtag("resize-handle"), ())
-        editor.document.shapes[0] = Shape("rectangle", 10, 20, 40, 10)
-        editor.draw()
-        self.assertEqual(len(editor.bed.find_withtag("resize-handle")), 4)
+        handles = editor.bed.find_withtag("resize-handle")
+        self.assertEqual(len(handles), 4)
+        self.assertEqual(len(editor.bed.find_withtag("rotate-handle")), 1)
+        # Every handle is drawn on a corner of the rotated object, not of its box.
+        view = editor.transform()
+        centre = lambda item: (sum(editor.bed.coords(item)[0::2])/2, sum(editor.bed.coords(item)[1::2])/2)
+        drawn = sorted(centre(item) for item in handles)
+        expected = sorted(view.to_canvas(*corner)
+                          for corner in ((25, 5), (25, 45), (35, 5), (35, 45)))
+        for (ax, ay), (ex, ey) in zip(drawn, expected):
+            self.assertAlmostEqual(ax, ex, places=6)
+            self.assertAlmostEqual(ay, ey, places=6)
+
+    def test_dragging_the_grip_rotates_and_a_rotated_resize_holds_its_anchor(self):
+        editor = self.app.geometry
+        editor.snap_enabled.set(False)
+        editor.document.shapes.append(Shape("rectangle", 100, 100, 40, 20, rotation=30))
+        editor.set_selection((0,), 0)
+        editor.refresh()
+        view = editor.transform()
+        canvas = lambda point: fake_event(*view.to_canvas(*point))
+
+        grip = editor.shape_handles(editor.document.shapes[0])[ROTATE_HANDLE]
+        editor.press(canvas(grip))
+        self.assertEqual(editor.interaction["mode"], "rotate")
+        # Pointing the grip straight right turns the top edge to face right.
+        editor.drag(canvas((150, 110)))
+        editor.release(canvas((150, 110)))
+        self.assertAlmostEqual(editor.document.shapes[0].rotation, 270.0, places=6)
+
+        rotated = Shape("rectangle", 100, 100, 40, 20, rotation=30)
+        editor.document.shapes[0] = rotated
+        editor.refresh()
+        before = editor.shape_handles(rotated)
+        editor.press(canvas(before["TR"]))
+        self.assertEqual(editor.interaction["mode"], "resize")
+        target = (before["TR"][0] + 6, before["TR"][1] + 4)
+        editor.drag(canvas(target))
+        editor.release(canvas(target))
+        after = editor.shape_handles(editor.document.shapes[0])
+        self.assertAlmostEqual(after["BL"][0], before["BL"][0], places=6)
+        self.assertAlmostEqual(after["BL"][1], before["BL"][1], places=6)
+        self.assertEqual(editor.document.shapes[0].rotation, 30)
 
     def test_text_resize_handles_match_the_nominal_editable_box(self):
         editor = self.app.geometry

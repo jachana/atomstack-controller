@@ -13,6 +13,7 @@ Canvas pixels grow down; bed millimetres grow up. Every conversion crosses that
 flip exactly once.
 """
 from dataclasses import dataclass
+import math
 
 from .geometry import BED_X, BED_Y
 
@@ -139,6 +140,95 @@ def handle_at(x, y, handles, tolerance):
 def corner_handles(x, y, width, height):
     return {"BL": (x, y), "BR": (x + width, y),
             "TL": (x, y + height), "TR": (x + width, y + height)}
+
+
+# Corner offsets from the box centre, as multiples of half the width and height.
+CORNER_SIGNS = {"BL": (-1, -1), "BR": (1, -1), "TL": (-1, 1), "TR": (1, 1)}
+OPPOSITE = {"BL": "TR", "BR": "TL", "TL": "BR", "TR": "BL"}
+ROTATE_HANDLE = "ROT"
+
+
+def _frame(shape_box, rotation, mirror_x, mirror_y):
+    """Centre and the world directions of the box's own axes.
+
+    Mirroring happens in the box's own frame before rotation, matching how the
+    geometry module transforms points, so a handle sits where its corner is
+    drawn rather than where an unmirrored box would put it.
+    """
+    x, y, width, height = shape_box
+    angle = math.radians(rotation % 360)
+    cosine, sine = math.cos(angle), math.sin(angle)
+    mx, my = (-1 if mirror_x else 1), (-1 if mirror_y else 1)
+    centre = (x + width / 2, y + height / 2)
+    return centre, (mx * cosine, mx * sine), (-my * sine, my * cosine)
+
+
+def transformed_point(shape_box, rotation, mirror_x, mirror_y, offset):
+    """World position of a point given as an offset from the box centre."""
+    centre, axis_x, axis_y = _frame(shape_box, rotation, mirror_x, mirror_y)
+    return (centre[0] + offset[0] * axis_x[0] + offset[1] * axis_y[0],
+            centre[1] + offset[0] * axis_x[1] + offset[1] * axis_y[1])
+
+
+def rotated_handles(shape_box, rotation, mirror_x=False, mirror_y=False, rotation_gap=0.0):
+    """Corner handles where they are actually drawn, plus the rotation grip.
+
+    ``rotation_gap`` places the grip that far beyond the top edge; pass a
+    distance in bed millimetres so it stays a constant size on screen.
+    """
+    width, height = shape_box[2], shape_box[3]
+    handles = {name: transformed_point(shape_box, rotation, mirror_x, mirror_y,
+                                       (sx * width / 2, sy * height / 2))
+               for name, (sx, sy) in CORNER_SIGNS.items()}
+    if rotation_gap:
+        handles[ROTATE_HANDLE] = transformed_point(shape_box, rotation, mirror_x, mirror_y,
+                                                   (0, height / 2 + rotation_gap))
+    return handles
+
+
+def resize_from_handle(handle, pointer, shape_box, rotation, mirror_x=False, mirror_y=False,
+                       minimum=0.0):
+    """New x/y/width/height for dragging ``handle`` to ``pointer``.
+
+    The opposite corner is the anchor: it stays exactly where it was, so a
+    rotated box grows along its own axes instead of the bed's. Returns the
+    unrotated box, because rotation is stored separately.
+    """
+    if handle not in CORNER_SIGNS:
+        raise KeyError(handle)
+    anchor_name = OPPOSITE[handle]
+    anchor = transformed_point(shape_box, rotation, mirror_x, mirror_y,
+                               (CORNER_SIGNS[anchor_name][0] * shape_box[2] / 2,
+                                CORNER_SIGNS[anchor_name][1] * shape_box[3] / 2))
+    _, axis_x, axis_y = _frame(shape_box, rotation, mirror_x, mirror_y)
+    delta = (pointer[0] - anchor[0], pointer[1] - anchor[1])
+    # The axes are orthonormal, so projecting onto them inverts the rotation.
+    width = abs(delta[0] * axis_x[0] + delta[1] * axis_x[1])
+    height = abs(delta[0] * axis_y[0] + delta[1] * axis_y[1])
+    width, height = max(minimum, width), max(minimum, height)
+    # Put the centre back where it has to be for the anchor to have not moved.
+    sx, sy = CORNER_SIGNS[anchor_name]
+    centre_x = anchor[0] - (sx * width / 2) * axis_x[0] - (sy * height / 2) * axis_y[0]
+    centre_y = anchor[1] - (sx * width / 2) * axis_x[1] - (sy * height / 2) * axis_y[1]
+    return {"x": centre_x - width / 2, "y": centre_y - height / 2,
+            "width": width, "height": height}
+
+
+def rotation_from_pointer(pointer, shape_box, mirror_y=False, step=0.0):
+    """Angle in degrees that points the box's top edge at ``pointer``.
+
+    ``step`` snaps the result, so a held drag can land on exact angles.
+    """
+    centre = (shape_box[0] + shape_box[2] / 2, shape_box[1] + shape_box[3] / 2)
+    dx, dy = pointer[0] - centre[0], pointer[1] - centre[1]
+    if math.hypot(dx, dy) < 1e-9:
+        return 0.0
+    # The grip sits on the box's +y axis, which mirroring turns around.
+    reference = 90.0 if not mirror_y else -90.0
+    angle = math.degrees(math.atan2(dy, dx)) - reference
+    if step > 0:
+        angle = round(angle / step) * step
+    return angle % 360
 
 
 def zoom_pan_correction(before, after, scale):

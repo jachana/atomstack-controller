@@ -10,7 +10,8 @@ from atomstack.geometry import BED_X, BED_Y
 from atomstack.viewport import (
     anchor_point, arrow_target, clamp_to_bed, clamp_zoom, corner_handles,
     fit_viewport, handle_at, inside_bed, snap_value, topmost_at, within_bounds,
-    zoom_pan_correction,
+    zoom_pan_correction, OPPOSITE, ROTATE_HANDLE, resize_from_handle,
+    rotated_handles, rotation_from_pointer,
 )
 
 
@@ -215,3 +216,68 @@ class Snapping(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RotatedHandleMath(unittest.TestCase):
+    """Handles must sit on the corners the geometry module actually draws."""
+
+    BOX = (40.0, 30.0, 60.0, 20.0)
+
+    def geometry_corners(self, rotation, mirror_x=False, mirror_y=False):
+        from atomstack.geometry import Shape, shape_paths
+        shape = Shape("rectangle", *self.BOX, rotation=rotation,
+                      mirror_x=mirror_x, mirror_y=mirror_y).validated()
+        path = shape_paths(shape)[0]
+        return {"BL": path[0], "BR": path[1], "TR": path[2], "TL": path[3]}
+
+    def test_unrotated_handles_match_the_plain_corners(self):
+        self.assertEqual(rotated_handles(self.BOX, 0), corner_handles(*self.BOX))
+
+    def test_handles_follow_rotation_and_mirroring(self):
+        for rotation in (0, 15, 90, 137.5, 250, 359):
+            for mirror_x, mirror_y in ((False, False), (True, False), (False, True), (True, True)):
+                expected = self.geometry_corners(rotation, mirror_x, mirror_y)
+                actual = rotated_handles(self.BOX, rotation, mirror_x, mirror_y)
+                for name, point in expected.items():
+                    with self.subTest(rotation=rotation, mirror=(mirror_x, mirror_y), corner=name):
+                        self.assertAlmostEqual(actual[name][0], point[0], places=9)
+                        self.assertAlmostEqual(actual[name][1], point[1], places=9)
+
+    def test_the_rotation_grip_sits_beyond_the_top_edge(self):
+        grip = rotated_handles(self.BOX, 0, rotation_gap=5)[ROTATE_HANDLE]
+        self.assertAlmostEqual(grip[0], 70.0)
+        self.assertAlmostEqual(grip[1], 55.0)
+        turned = rotated_handles(self.BOX, 90, rotation_gap=5)[ROTATE_HANDLE]
+        self.assertAlmostEqual(turned[0], 55.0)
+        self.assertAlmostEqual(turned[1], 40.0)
+
+    def test_resizing_a_rotated_box_holds_the_opposite_corner_still(self):
+        for rotation in (0, 30, 90, 200, 315):
+            for handle in ("BL", "BR", "TL", "TR"):
+                for mirror_x in (False, True):
+                    before = rotated_handles(self.BOX, rotation, mirror_x)
+                    pointer = (before[handle][0] + 7.5, before[handle][1] - 3.25)
+                    box = resize_from_handle(handle, pointer, self.BOX, rotation, mirror_x)
+                    after = rotated_handles((box["x"], box["y"], box["width"], box["height"]),
+                                            rotation, mirror_x)
+                    anchor = OPPOSITE[handle]
+                    with self.subTest(rotation=rotation, handle=handle, mirror_x=mirror_x):
+                        self.assertAlmostEqual(after[anchor][0], before[anchor][0], places=9)
+                        self.assertAlmostEqual(after[anchor][1], before[anchor][1], places=9)
+                        # The dragged corner ends up under the pointer.
+                        self.assertAlmostEqual(after[handle][0], pointer[0], places=9)
+                        self.assertAlmostEqual(after[handle][1], pointer[1], places=9)
+
+    def test_resize_matches_the_unrotated_behaviour_and_honours_a_minimum(self):
+        box = resize_from_handle("TR", (80, 40), self.BOX, 0)
+        self.assertEqual((box["x"], box["y"], box["width"], box["height"]), (40, 30, 40, 10))
+        collapsed = resize_from_handle("TR", (40, 30), self.BOX, 0, minimum=0.1)
+        self.assertEqual((collapsed["width"], collapsed["height"]), (0.1, 0.1))
+
+    def test_rotation_follows_the_pointer_and_snaps(self):
+        centre_right = (100.0, 40.0)
+        self.assertAlmostEqual(rotation_from_pointer(centre_right, self.BOX), 270.0)
+        self.assertAlmostEqual(rotation_from_pointer((70.0, 90.0), self.BOX), 0.0)
+        self.assertAlmostEqual(rotation_from_pointer((72.0, 90.0), self.BOX, step=15), 0.0)
+        self.assertAlmostEqual(rotation_from_pointer(centre_right, self.BOX, mirror_y=True), 90.0)
+        self.assertEqual(rotation_from_pointer((70.0, 40.0), self.BOX), 0.0)

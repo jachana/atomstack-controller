@@ -1,8 +1,8 @@
-PASS: 203 tests passed, 0 failed.
-Generated 2026-09-05T19:25:32Z from commit 980bb9a on branch master.
+PASS: 215 tests passed, 0 failed.
+Generated 2026-09-05T22:12:00Z from commit a745b87 on branch master.
 Working tree clean: no.
 Python 3.12.10 on Windows-11-10.0.26200-SP0.
-pytest summary: 203 passed in 3.19s
+pytest summary: 215 passed in 2.94s
 
 Packaged executables found in the delivery folder. This script
 does not build or launch them, so these hashes identify whatever
@@ -12,6 +12,10 @@ is on disk and do NOT prove it was built from the commit above:
   AtomstackController-0.13.0.exe  20281774 bytes  sha256 b8f4d1c5831d4b74d276b549e8bb7df6db1e908e750bbf423570c7de1676217d
     fixture bundle: observed.txt present, V1.055 and $130=365.000 intact
   AtomstackController-0.14.0.exe  20354422 bytes  sha256 5409ad68a97cf3dd8ebbffbc4fac7fe471e1448bba7d36f1a2b12f61ca0e486a
+    fixture bundle: observed.txt present, V1.055 and $130=365.000 intact
+  AtomstackController-0.14.1.exe  20355117 bytes  sha256 6b231a03725964d5b537c75e87d4e784a4b75f0c7668200699ab0647de7b4ee7
+    fixture bundle: observed.txt present, V1.055 and $130=365.000 intact
+  AtomstackController-0.15.0.exe  20358616 bytes  sha256 57e254ea58fdd12714439be6a225d6c741a591f675a369f2ff48719adad82d3d
     fixture bundle: observed.txt present, V1.055 and $130=365.000 intact
   AtomstackController.exe  20354422 bytes  sha256 5409ad68a97cf3dd8ebbffbc4fac7fe471e1448bba7d36f1a2b12f61ca0e486a
     fixture bundle: observed.txt present, V1.055 and $130=365.000 intact
