@@ -221,11 +221,17 @@ class SessionTests(unittest.TestCase):
         self.assertFalse(self.c.connected)
         self.assertIsNone(self.c.origin)
 
-    def test_stale_position_blocks_motion(self):
+    def test_stale_position_waits_for_a_fresh_report_before_moving(self):
+        """Nothing moves on an old coordinate; the request waits for a new one."""
         self.home()
         self.clock.time += 2
-        with self.assertRaises(GuardError):
-            self.c.jog("X", 1)
+        before = list(self.t.writes)
+        self.c.jog("X", 1)
+        self.assertEqual(self.c.deferred_motion, ("jog", "X", 1, 1.0, 300))
+        self.assertFalse([x for x in self.t.writes[len(before):] if x.startswith(b"$J")],
+                         "a stale position must not put a jog on the wire")
+        self.pump(60)
+        self.assertEqual(self.c.app_position, (1, 0))
 
     def test_missing_status_during_jog_stops(self):
         self.home()
@@ -407,12 +413,28 @@ class SessionTests(unittest.TestCase):
         self.c.tick()
         self.assertTrue(self.c.connected, self.c.message)
         self.assertEqual(self.c.home_state, "Confirmed")
-        with self.assertRaises(GuardError):
-            self.c.jog("X", 1)  # The position really is old, so motion waits.
-        self.pump(30)
+        # The operator's click lands on an old coordinate, so it waits for a
+        # fresh one rather than being thrown away with an error.
         self.c.jog("X", 1)
+        self.assertIsNotNone(self.c.deferred_motion)
         self.pump(60)
         self.assertEqual(self.c.app_position, (1, 0))
+
+    def test_a_job_confirmed_after_a_dialog_starts_instead_of_being_refused(self):
+        """The confirmation the operator just read must not cost them the send."""
+        self.home()
+        lines = ("G21", "G90", "M5", "S0", "G53 G0 X-287.000 Y-300.000",
+                 "M4 S100", "G53 G1 X-280.000 Y-300.000 F3000", "M5", "S0")
+        self.clock.time += 6  # Time spent reading the safety prompt.
+        self.c.run_job(lines)
+        self.assertEqual(self.c.deferred_motion, ("job", lines))
+        for _ in range(400):
+            self.pump(1)
+            if "Job complete" in self.c.message or not self.c.connected:
+                break
+        self.assertTrue(self.c.connected, self.c.message)
+        self.assertEqual(self.c.job_done, self.c.job_total)
+        self.assertIn("Job complete", self.c.message)
 
     def test_a_slow_job_outlasts_the_planner_without_a_false_timeout(self):
         """A full planner delays an acknowledgement far past any fixed timeout."""

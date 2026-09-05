@@ -196,7 +196,15 @@ class Controller:
     def _status_poll_pending(self):
         return self.pending is not None and self.pending.text == "?" and not self.queue
 
-    def _guard(self, require_home=False, allow_status_poll=False):
+    def _awaiting_position(self):
+        """True when the next report is what a motion request should wait for.
+
+        Either a poll is already in flight, or nothing has been heard recently
+        enough to act on — after a modal dialog stopped the tick loop, say.
+        """
+        return self._status_poll_pending() or self.status is None or self.clock() - self.status_at > 1.5
+
+    def _guard(self, require_home=False, allow_status_poll=False, allow_stale=False):
         pending_blocks = self.pending is not None and not (allow_status_poll and self._status_poll_pending())
         if not self.connected or not self.ready or self.phase != "idle" or pending_blocks or self.queue:
             raise GuardError("Wait for the connection and diagnostics to become ready.")
@@ -204,7 +212,9 @@ class Controller:
             raise GuardError("Live settings do not match the observed machine profile.")
         if not self.laser_off:
             raise GuardError("The controller must report M5 S0 before motion.")
-        if not self.status or self.clock() - self.status_at > 1.5:
+        # allow_stale checks a request that is about to wait for a fresh report;
+        # it runs again in full once that report arrives.
+        if not self.status or (not allow_stale and self.clock() - self.status_at > 1.5):
             raise GuardError("Position is stale. Wait for a fresh status report.")
         allowed_states = ("Idle",) if require_home else ("Idle", "Alarm")
         if self.status.state not in allowed_states or self.status.machine is None:
@@ -215,8 +225,8 @@ class Controller:
             raise GuardError("Home, then confirm the head is physically at bottom-left.")
 
     def home(self):
-        if self._status_poll_pending():
-            self._guard(allow_status_poll=True)
+        if self._awaiting_position():
+            self._guard(allow_status_poll=True, allow_stale=True)
             if self.deferred_motion:
                 raise GuardError("A motion request is already waiting for the current position.")
             self.deferred_motion = ("home",)
@@ -250,8 +260,8 @@ class Controller:
             raise GuardError("Jog distance must be 0.1, 1, 5, or 10 mm.")
         if feed not in JOG_FEEDS or feed > self.max_xy_feed:
             raise GuardError("Jog speed must be one of the guarded presets.")
-        if self._status_poll_pending():
-            self._guard(require_home=True, allow_status_poll=True)
+        if self._awaiting_position():
+            self._guard(require_home=True, allow_status_poll=True, allow_stale=True)
             if self.deferred_motion:
                 raise GuardError("A motion request is already waiting for the current position.")
             self.deferred_motion = ("jog", axis, direction, distance, feed)
@@ -283,8 +293,8 @@ class Controller:
             raise GuardError(f"Click-to-jog target is outside {self.bounds_text}.")
         if feed not in JOG_FEEDS or feed > self.max_xy_feed:
             raise GuardError("Click-to-jog speed exceeds the live machine limit.")
-        if self._status_poll_pending():
-            self._guard(require_home=True, allow_status_poll=True)
+        if self._awaiting_position():
+            self._guard(require_home=True, allow_status_poll=True, allow_stale=True)
             if self.deferred_motion:
                 raise GuardError("A motion request is already waiting for the current position.")
             self.deferred_motion = ("jog-to", point[0], point[1], feed)
@@ -310,8 +320,8 @@ class Controller:
             raise GuardError("Frame speed must be one of the guarded presets.")
         if any(not self._inside(point) for point in points):
             raise GuardError("Frame blocked: its outline exceeds the app travel bounds.")
-        if self._status_poll_pending():
-            self._guard(require_home=True, allow_status_poll=True)
+        if self._awaiting_position():
+            self._guard(require_home=True, allow_status_poll=True, allow_stale=True)
             if self.deferred_motion:
                 raise GuardError("A motion request is already waiting for the current position.")
             self.deferred_motion = ("frame", points, feed)
@@ -351,7 +361,9 @@ class Controller:
 
     def run_job(self, lines):
         lines = tuple(lines)
-        self._guard(require_home=True, allow_status_poll=True)
+        # Validating the job against a slightly old position is fine: if it has
+        # to wait for a fresh report, the whole request runs again on arrival.
+        self._guard(require_home=True, allow_status_poll=True, allow_stale=True)
         commands = []
         durations = []
         final_target = None
@@ -367,7 +379,7 @@ class Controller:
             durations.append(seconds)
         if not commands or commands[-2:] != ["M5", "S0"]:
             raise GuardError("Generated job must end with M5 and S0.")
-        if self._status_poll_pending():
+        if self._awaiting_position():
             if self.deferred_motion:
                 raise GuardError("A motion request is already waiting for the current position.")
             self.deferred_motion = ("job", lines)
