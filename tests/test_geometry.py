@@ -160,6 +160,10 @@ class GeometryTests(unittest.TestCase):
         self.assertEqual(metrics["rapid_distance"], 30)
         self.assertEqual(metrics["burn_distance"], 40)
         self.assertAlmostEqual(metrics["estimated_seconds"], 4.3)
+        # A machine that rapids at 20,000 mm/min spends a tenth of that on travel.
+        live = document.job_metrics(rapid_feed=20000)
+        self.assertAlmostEqual(live["estimated_seconds"], 4.09)
+        self.assertEqual(live["rapid_distance"], metrics["rapid_distance"])
         self.assertEqual(metrics["max_power"], 250)
 
     def test_preview_requires_geometry_and_finite_start(self):

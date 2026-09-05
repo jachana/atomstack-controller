@@ -1516,8 +1516,10 @@ class JobPreviewWindow:
     """Read-only visualization of the exact geometry order sent to the controller."""
     def __init__(self, editor):
         self.editor = editor
-        self.segments = editor.document.preview_segments()
-        self.metrics = editor.document.job_metrics()
+        # Rapids run at the machine's own rate, not at any speed the app chose.
+        rapid = editor.controller.max_xy_feed or None
+        self.segments = editor.document.preview_segments(rapid_feed=rapid)
+        self.metrics = editor.document.job_metrics(rapid_feed=rapid)
         self.window = tk.Toplevel(editor.window)
         self.window.title("Job preview · no machine movement")
         self.window.geometry("1050x780")
