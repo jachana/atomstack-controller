@@ -342,3 +342,12 @@ side is unreachable for cutting with this offset. Framing also checks cut reacha
 Offsets cannot change during motion or a queued motion request. Invalid saved
 alignment blocks sending until a valid value is saved. Tests use the simulator;
 physical alignment still needs verification on the machine.
+
+## Workspace 0.15
+
+Dark compact controls, a larger light canvas with millimetre rulers, a left drawing
+rail, and top numeric X/Y/width/height/angle fields follow the supplied LightBurn
+layout reference. The right dock holds Objects, Cut layers, and Move tabs plus
+fixed job controls and materials. Move uses the same guarded home/confirm/jog
+commands; the full keyboard and mouse navigator remains in Machine & Jog.
+The interface is an implemented subset, not complete LightBurn feature parity.

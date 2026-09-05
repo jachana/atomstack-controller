@@ -12,7 +12,7 @@ class LayerWindow:
         if embedded:
             self.window = ttk.Frame(parent)
             self.window.pack(fill="both", expand=True)
-            canvas = tk.Canvas(self.window, highlightthickness=0, width=285, background="#f5f7fb")
+            canvas = tk.Canvas(self.window, highlightthickness=0, width=285, background="#25272b")
             scroll = ttk.Scrollbar(self.window, orient="vertical", command=canvas.yview)
             scroll.pack(side="right", fill="y")
             canvas.pack(side="left", fill="both", expand=True)
