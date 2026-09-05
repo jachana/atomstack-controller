@@ -65,7 +65,7 @@ class App:
         self.status_text = tk.StringVar(value="Disconnected")
         self.message = tk.StringVar()
         self.firmware = tk.StringVar(value="Not read")
-        self.profile = tk.StringVar(value="Expected 365 × 305 mm · S-max 1000")
+        self.profile = tk.StringVar(value=f"Expected {BED_X:g} × {BED_Y:g} mm · S-max 1000")
         self.homed = tk.StringVar(value="Not homed")
         self.app_xy = tk.StringVar(value="X  —        Y  —")
         self.machine_xy = tk.StringVar(value="Machine X —   Y —")
@@ -133,7 +133,8 @@ class App:
         self.canvas.bind("<Configure>", lambda e: self.draw_bed())
         self.canvas.bind("<Button-1>", self.click_bed)
         self.canvas.bind("<MouseWheel>", self.zoom_bed)
-        ttk.Label(left, text="Click to jog · mouse wheel to zoom · arrow keys use selected step\nApp envelope: 365 × 305 mm · design overlay is read-only",
+        ttk.Label(left, text=("Click to jog · mouse wheel to zoom · arrow keys use selected step\n"
+                              f"App envelope: {BED_X:g} × {BED_Y:g} mm · design overlay is read-only"),
                   style="Quiet.TLabel").pack(anchor="w", pady=(6, 0))
         right = ttk.Frame(body)
         right.grid(row=0, column=1, sticky="nsew")
@@ -328,7 +329,13 @@ class App:
         self.message.set(c.message)
         self.status_text.set(f"Connected · {c.status.state}" if c.connected and c.ready and c.status else "Connecting…" if c.connected else "Disconnected")
         self.firmware.set(c.firmware)
-        self.profile.set("Live profile verified · 365 × 305 mm · S1000" if c.profile_ok else "Expected 365 × 305 mm · S-max 1000")
+        # Show the machine's own numbers once verified, never the app's constants.
+        travel = c.travel
+        if c.profile_ok and travel:
+            self.profile.set(f"Live profile verified · {travel[0]:g} × {travel[1]:g} mm"
+                             f" · S{c.settings.get(30, 0):g}")
+        else:
+            self.profile.set(f"Expected {BED_X:g} × {BED_Y:g} mm · S-max 1000")
         self.homed.set("Home: " + c.home_state)
         xy = c.app_position
         self.app_xy.set(f"X {xy[0]:7.3f}    Y {xy[1]:7.3f}" if xy else "X  —        Y  —")
@@ -554,7 +561,7 @@ class GeometryWindow:
         header = ttk.Frame(outer)
         header.pack(fill="x")
         ttk.Label(header, text="Design workspace", style="Title.TLabel").pack(side="left")
-        ttk.Label(header, text="365 × 305 mm", style="Quiet.TLabel").pack(side="right")
+        ttk.Label(header, text=f"{BED_X:g} × {BED_Y:g} mm", style="Quiet.TLabel").pack(side="right")
         ttk.Button(header, text="Save design", command=self.save_design).pack(side="right", padx=(4, 12))
         ttk.Button(header, text="Open", command=self.open_design).pack(side="right", padx=4)
         ttk.Button(header, text="New", command=self.new_design).pack(side="right", padx=4)
@@ -682,7 +689,8 @@ class GeometryWindow:
         self.add_value_button.pack(side="left", fill="x", expand=True, padx=(0, 2))
         self.apply_value_button = ttk.Button(value_actions, text="Apply values", command=self.apply)
         self.apply_value_button.pack(side="left", fill="x", expand=True, padx=(2, 0))
-        ttk.Label(side, text="Frame keeps the laser off.\nX 0–365 · Y 0–305 mm · S 0–1000",
+        ttk.Label(side, text=("Frame keeps the laser off.\n"
+                              f"X 0–{BED_X:g} · Y 0–{BED_Y:g} mm · S 0–1000"),
                   style="Quiet.TLabel", justify="left").pack(anchor="w")
         self.frame_status = tk.StringVar(value="Add geometry to enable Frame.")
         ttk.Label(outer, textvariable=self.frame_status, style="Quiet.TLabel", wraplength=980).pack(fill="x", pady=(10, 0))

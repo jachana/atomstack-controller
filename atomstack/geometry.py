@@ -55,7 +55,7 @@ class Shape:
         left, bottom, right, top = shape_bounds(self)
         tolerance = 1e-7
         if left < -tolerance or bottom < -tolerance or right > BED_X+tolerance or top > BED_Y+tolerance:
-            raise ValueError("Transformed geometry must fit inside the 365 × 305 mm bed.")
+            raise ValueError(f"Transformed geometry must fit inside the {BED_X:g} × {BED_Y:g} mm bed.")
         return self
 
     @property

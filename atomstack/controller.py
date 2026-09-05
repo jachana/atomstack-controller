@@ -88,6 +88,26 @@ class Controller:
     def max_xy_feed(self):
         return int(min(self.settings.get(110, 0), self.settings.get(111, 0)))
 
+    @property
+    def bounds_text(self):
+        """Bed limits for an error message, in the machine's own numbers."""
+        travel = self.travel
+        if travel is None:
+            return "the machine travel limits, which have not been read yet"
+        return f"0-{travel[0]:g} X / 0-{travel[1]:g} Y mm"
+
+    @property
+    def travel(self):
+        """Bed span in millimetres, taken from the live $130/$131.
+
+        None until both have been read, so bounds checks fail closed rather than
+        falling back to a constant that the machine has not confirmed.
+        """
+        span_x, span_y = self.settings.get(130), self.settings.get(131)
+        if span_x is None or span_y is None or span_x <= 0 or span_y <= 0:
+            return None
+        return (span_x, span_y)
+
     def attach(self, transport, settle=2.0):
         if self.connected:
             self.disconnect()
@@ -240,7 +260,7 @@ class Controller:
         delta = direction * distance
         target[index] += delta
         if not self._inside(app) or not self._inside(target):
-            raise GuardError("Jog blocked: target is outside 0–365 X / 0–305 Y mm.")
+            raise GuardError(f"Jog blocked: target is outside {self.bounds_text}.")
         machine_target = list(self.status.machine)
         machine_target[index] += delta
         self.target = tuple(machine_target)
@@ -256,7 +276,7 @@ class Controller:
         except (TypeError, ValueError):
             raise GuardError("Click-to-jog requires numeric X/Y coordinates.")
         if not all(math.isfinite(value) for value in point) or not self._inside(point):
-            raise GuardError("Click-to-jog target is outside 0–365 X / 0–305 Y mm.")
+            raise GuardError(f"Click-to-jog target is outside {self.bounds_text}.")
         if feed not in JOG_FEEDS or feed > self.max_xy_feed:
             raise GuardError("Click-to-jog speed exceeds the live machine limit.")
         if self._status_poll_pending():
@@ -317,7 +337,9 @@ class Controller:
             return
         self.target = self.frame_waypoints.popleft()
         current = self.status.machine
-        distance = math.dist(current, self.target) if current else 365
+        travel = self.travel
+        longest = math.dist((0, 0), travel) if travel else 500
+        distance = math.dist(current, self.target) if current else longest
         self.phase = "frame-command"
         self.motion_deadline = self.clock() + distance / self.frame_feed * 60 + 5
         self._enqueue(f"$J=G21 G90 G53 X{self.target[0]:.3f} Y{self.target[1]:.3f} F{self.frame_feed}", "frame")
@@ -401,9 +423,17 @@ class Controller:
         self.job_paused = False
         self._start_job_command()
 
-    @staticmethod
-    def _inside(xy):
-        return xy is not None and 0 <= xy[0] <= 365 and 0 <= xy[1] <= 305
+    def _inside(self, xy):
+        """Bounds check against the machine's reported travel, never a constant.
+
+        The profile guard already requires $130=365 and $131=305, so this agrees
+        with the old hardcoded limits on the observed machine. Reading them live
+        means the two can never quietly disagree.
+        """
+        travel = self.travel
+        if travel is None or xy is None:
+            return False
+        return 0 <= xy[0] <= travel[0] and 0 <= xy[1] <= travel[1]
 
     @staticmethod
     def _near(a, b):
