@@ -8,6 +8,8 @@ from tkinter import ttk, messagebox, filedialog, simpledialog
 from .controller import Controller, GuardError, JOG_FEEDS
 from . import __version__
 from .diagnostics import Reporter
+from .projects import ProjectStore, atomic_json
+from dataclasses import replace
 from .protocol import READ_COMMANDS
 from .transports import SerialTransport, Simulator, list_ports
 from .geometry import Document, Shape, BED_X, BED_Y, shape_bounds, shape_paths
@@ -299,6 +301,9 @@ class App:
         self.controller.stop()
 
     def close(self):
+        if not self.geometry.confirm_discard():
+            return
+        self.geometry.project_store.clear()
         self.controller.disconnect()
         self.write_report(force=True)
         self.root.destroy()
@@ -530,6 +535,9 @@ class GeometryWindow:
             self.window.geometry("1100x900")
             self.window.minsize(1000, 820)
         self.document = Document()
+        self.project_store = ProjectStore()
+        self.saved_payload = self.document.to_payload()
+        self.document_status = tk.StringVar(value="Untitled · saved")
         self.controller = controller
         self.materials = MaterialLibrary()
         self.selected = None
@@ -564,13 +572,19 @@ class GeometryWindow:
         header = ttk.Frame(outer)
         header.pack(fill="x")
         ttk.Label(header, text="Design workspace", style="Title.TLabel").pack(side="left")
-        ttk.Label(header, text=f"{BED_X:g} × {BED_Y:g} mm", style="Quiet.TLabel").pack(side="right")
+        ttk.Label(header, textvariable=self.document_status, width=28, style="Quiet.TLabel").pack(side="right")
         ttk.Button(header, text="Save design", command=self.save_design).pack(side="right", padx=(4, 12))
         ttk.Button(header, text="Open", command=self.open_design).pack(side="right", padx=4)
         ttk.Button(header, text="New", command=self.new_design).pack(side="right", padx=4)
+        file_menu = tk.Menu(self.window, tearoff=False)
+        file_menu.add_command(label="Import SVG…", command=self.import_svg)
+        file_menu.add_command(label="Save as…", command=self.save_as)
+        file_menu.add_command(label="Recent designs…", command=self.open_recent)
+        file_menu.add_command(label="Recover autosave…", command=self.recover_design)
+        ttk.Menubutton(header, text="File", menu=file_menu).pack(side="right", padx=4)
         toolbar = ttk.Frame(outer)
         toolbar.pack(fill="x", pady=(12, 8))
-        for text, value in (("Select / move", "select"), ("Rectangle", "rectangle"), ("Ellipse", "circle"), ("Line", "line"), ("Text", "text")):
+        for text, value in (("Select / move", "select"), ("Pan", "pan"), ("Rectangle", "rectangle"), ("Ellipse", "circle"), ("Line", "line"), ("Text", "text")):
             ttk.Radiobutton(toolbar, text=text, variable=self.tool, value=value).pack(side="left", padx=(0, 10))
         ttk.Separator(toolbar, orient="vertical").pack(side="left", fill="y", padx=5)
         self.undo_button = ttk.Button(toolbar, text="Undo", command=self.undo)
@@ -610,7 +624,14 @@ class GeometryWindow:
         layer_button = ttk.Menubutton(view_bar, text="Stack order", menu=layer_menu)
         layer_button.pack(side="left", padx=3)
         ttk.Button(view_bar, text="Cut layers…", command=self.open_layers).pack(side="left", padx=3)
-        ttk.Label(view_bar, text="Wheel: zoom  ·  middle-drag: pan  ·  arrows: nudge", style="Quiet.TLabel").pack(side="left", padx=8)
+        production = tk.Menu(self.window, tearoff=False)
+        production.add_command(label="Array copies…", command=self.create_array)
+        production.add_command(label="Offset outline…", command=self.create_offset)
+        production.add_command(label="Align left edges", command=lambda: self.align_selection("left"))
+        production.add_command(label="Align horizontal centers", command=lambda: self.align_selection("center_x"))
+        production.add_command(label="Align bottom edges", command=lambda: self.align_selection("bottom"))
+        production.add_command(label="Align vertical centers", command=lambda: self.align_selection("center_y"))
+        ttk.Menubutton(view_bar, text="Arrange", menu=production).pack(side="left", padx=3)
         action_bar = ttk.Frame(outer)
         action_bar.pack(fill="x", pady=(0, 10))
         ttk.Button(action_bar, text="Create burn-test grid…", command=self.open_burn_test).pack(side="left")
@@ -654,8 +675,12 @@ class GeometryWindow:
         self.bed.bind("<ButtonPress-2>", self.pan_press)
         self.bed.bind("<B2-Motion>", self.pan_drag)
         self.bed.bind("<ButtonRelease-2>", self.pan_release)
-        side = ttk.Frame(content, width=270)
-        side.grid(row=0, column=1, sticky="ns")
+        self.inspector = ttk.Notebook(content, width=300)
+        self.inspector.grid(row=0, column=1, sticky="nsew")
+        side = ttk.Frame(self.inspector, width=290)
+        self.inspector.add(side, text="Objects")
+        self.layer_panel = ttk.Frame(self.inspector)
+        self.inspector.add(self.layer_panel, text="Cut layers")
         ttk.Label(side, text="Shapes", style="Section.TLabel").pack(anchor="w")
         list_frame = ttk.Frame(side)
         list_frame.pack(fill="x", pady=(6, 8))
@@ -716,7 +741,167 @@ class GeometryWindow:
         self.window.bind_all("<Control-o>", lambda event: self.open_shortcut())
         self.window.bind_all("<Control-n>", lambda event: self.new_shortcut())
         self.window.bind_all("<Control-a>", self.select_all_shortcut)
+        from .layer_ui import LayerWindow
+        self.layer_window = LayerWindow(self, parent=self.layer_panel)
         self.refresh_frame_controls()
+        self.window.after(10000, self.autosave_tick)
+        self.window.after(1200, self.offer_recovery)
+
+    def dirty(self):
+        return self.document.to_payload() != self.saved_payload
+
+    def update_document_status(self):
+        name = self.design_path.name if self.design_path else "Untitled"
+        if len(name)>20: name=name[:17]+"…"
+        self.document_status.set(name + (" · unsaved changes" if self.dirty() else " · saved"))
+
+    def autosave_tick(self):
+        if not self.window.winfo_exists():
+            return
+        try:
+            if self.dirty():
+                self.project_store.autosave(self.document.to_payload(), self.design_path)
+        except (OSError, ValueError) as exc:
+            self.message.set(f"Autosave failed: {exc}. Save your design manually.")
+        self.update_document_status()
+        self.window.after(10000, self.autosave_tick)
+
+    def confirm_discard(self):
+        if not self.dirty():
+            return True
+        answer = messagebox.askyesnocancel("Unsaved design", "Save your changes before continuing?", parent=self.window)
+        if answer is None:
+            return False
+        if answer:
+            self.save_design()
+            return not self.dirty()
+        return True
+
+    def offer_recovery(self):
+        if self.project_store.candidates() and not self.document.shapes:
+            if messagebox.askyesno("Recover design", "An autosaved design is available. Recover it now?", parent=self.window):
+                self.recover_design()
+
+    def recover_design(self):
+        candidates = self.project_store.candidates()
+        if not candidates:
+            self.message.set("No recovery files available.")
+            return
+        if not self.confirm_discard():
+            return
+        try:
+            recovery = json.loads(candidates[0].read_text(encoding="utf-8"))
+            document = Document.from_payload(recovery["document"])
+            self.checkpoint()
+            self.document = document
+            self.design_path = Path(recovery["path"]) if recovery.get("path") else None
+            self.project_store.adopted = candidates[0]
+            self.saved_payload = None
+            self.set_selection(())
+            self.refresh("Recovered autosave. Save the design to keep it.")
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            self.message.set(f"Could not recover design: {exc}")
+
+    def save_as(self):
+        previous = self.design_path
+        self.design_path = None
+        self.save_design()
+        if self.design_path is None:
+            self.design_path = previous
+        self.update_document_status()
+
+    def open_recent(self):
+        paths = self.project_store.recent()
+        if not paths:
+            self.message.set("No recent designs yet.")
+            return
+        window = tk.Toplevel(self.window)
+        window.title("Recent designs")
+        choices = tk.Listbox(window, width=90, height=min(10, len(paths)), exportselection=False)
+        choices.pack(fill="both", expand=True, padx=12, pady=12)
+        for path in paths:
+            choices.insert("end", path)
+        def open_choice():
+            if choices.curselection():
+                path = paths[choices.curselection()[0]]
+                window.destroy()
+                self.open_design(path)
+        ttk.Button(window, text="Open selected", command=open_choice).pack(pady=(0,12))
+        choices.bind("<Double-Button-1>", lambda event: open_choice())
+
+    def import_svg(self):
+        from .svg_import import import_svg
+        path = filedialog.askopenfilename(parent=self.window, title="Import SVG", filetypes=(("SVG vectors", "*.svg"),))
+        if not path:
+            return
+        def load():
+            shapes = import_svg(Path(path))
+            self.checkpoint()
+            first = len(self.document.shapes)
+            self.document.shapes.extend(shapes)
+            self.set_selection(range(first, first+len(shapes)))
+            self.fit_view()
+            self.refresh(f"Imported {len(shapes)} vector objects at their SVG size. Curves use 0.05 mm tolerance.")
+        try:
+            self.act(load)
+        except OSError as exc:
+            self.message.set(f"Could not read SVG: {exc}")
+
+    def create_array(self):
+        from .production import array_copies
+        if not self.selected_indices():
+            self.message.set("Select objects to duplicate.")
+            return
+        columns = simpledialog.askinteger("Array", "Columns (including original):", initialvalue=3, minvalue=1, maxvalue=30, parent=self.window)
+        if columns is None: return
+        rows = simpledialog.askinteger("Array", "Rows (including original):", initialvalue=2, minvalue=1, maxvalue=30, parent=self.window)
+        if rows is None: return
+        gap = simpledialog.askfloat("Array", "Gap between copies in mm:", initialvalue=2, minvalue=0, maxvalue=100, parent=self.window)
+        if gap is None: return
+        def apply_array():
+            copies = array_copies([self.document.shapes[i] for i in self.selected_indices()], columns, rows, gap, gap)
+            self.checkpoint()
+            start = len(self.document.shapes)
+            self.document.shapes.extend(copies)
+            self.set_selection(range(start, start+len(copies)))
+            self.refresh(f"Added {len(copies)} array objects.")
+        self.act(apply_array)
+
+    def create_offset(self):
+        from .production import offset_shape
+        indices = self.selected_indices()
+        if not indices:
+            self.message.set("Select closed outlines to offset.")
+            return
+        distance = simpledialog.askfloat("Offset outline", "Distance in mm (positive outward, negative inward):", initialvalue=1, parent=self.window)
+        if distance is None: return
+        def apply_offset():
+            copies = [offset_shape(self.document.shapes[i], distance) for i in indices]
+            self.checkpoint()
+            start = len(self.document.shapes)
+            self.document.shapes.extend(copies)
+            self.set_selection(range(start, start+len(copies)))
+            self.refresh("Added offset outlines. Originals remain in the design.")
+        self.act(apply_offset)
+
+    def align_selection(self, alignment):
+        indices = self.selected_indices()
+        if len(indices) < 2:
+            self.message.set("Select at least two objects; the primary object is the alignment reference.")
+            return
+        def align():
+            ref = shape_bounds(self.document.shapes[self.selected])
+            position = lambda b: b[0] if alignment=="left" else b[1] if alignment=="bottom" else (b[0]+b[2])/2 if alignment=="center_x" else (b[1]+b[3])/2
+            changes = []
+            for index in indices:
+                shape = self.document.shapes[index]
+                delta = position(ref)-position(shape_bounds(shape))
+                changes.append((index, replace(shape, x=shape.x+delta if alignment in ("left","center_x") else shape.x,
+                                                y=shape.y+delta if alignment in ("bottom","center_y") else shape.y).validated()))
+            self.checkpoint()
+            for index, shape in changes: self.document.shapes[index] = shape
+            self.refresh("Aligned selection to the primary object.")
+        self.act(align)
 
     def values(self, kind=None):
         fallback = self.document.shapes[self.selected].kind if self.selected is not None else "rectangle"
@@ -726,7 +911,10 @@ class GeometryWindow:
                      int(self.fields["speed"].get()), int(self.fields["power"].get()), int(self.fields["passes"].get()),
                      self.fields["text"].get(), self.font_family.get(),
                      rotation=float(self.fields["rotation"].get()),
-                     mirror_x=self.mirror_x.get(), mirror_y=self.mirror_y.get())
+                     mirror_x=self.mirror_x.get(), mirror_y=self.mirror_y.get(),
+                     paths=self.document.shapes[self.selected].paths if self.selected is not None else (),
+                     mode=self.document.shapes[self.selected].mode if self.selected is not None else "line",
+                     interval=self.document.shapes[self.selected].interval if self.selected is not None else 0.2)
 
     def act(self, operation):
         try:
@@ -846,18 +1034,22 @@ class GeometryWindow:
             return "break"
 
     def new_design(self):
-        if self.document.shapes and not messagebox.askyesno("New design", "Clear the current design? You can still use Undo afterward.", parent=self.window):
+        if not self.confirm_discard():
             return
         self.checkpoint()
         self.document.shapes = []
         self.document.layers = []
         self.set_selection(())
         self.design_path = None
+        self.saved_payload = self.document.to_payload()
+        self.project_store.clear()
         self.fit_view()
         self.refresh("New empty design.")
 
-    def open_design(self):
-        path = filedialog.askopenfilename(parent=self.window, title="Open Atomstack design",
+    def open_design(self, path=None):
+        if not self.confirm_discard():
+            return
+        path = path or filedialog.askopenfilename(parent=self.window, title="Open Atomstack design",
                                           filetypes=(("Atomstack design", "*.atomdesign"), ("JSON files", "*.json")))
         if not path:
             return
@@ -870,6 +1062,9 @@ class GeometryWindow:
             self.document.layers = loaded.layers
             self.set_selection((0,) if shapes else ())
             self.design_path = Path(path)
+            self.saved_payload = self.document.to_payload()
+            self.project_store.clear()
+            self.project_store.remember(path)
             self.fit_view()
             self.refresh(f"Opened {self.design_path.name}.")
         except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
@@ -888,10 +1083,12 @@ class GeometryWindow:
             payload = self.document.to_payload()
             # Write beside the design and rename over it, the way the material
             # library does: an interrupted save must not truncate the old file.
-            temporary = path.with_suffix(path.suffix + ".tmp")
-            temporary.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-            temporary.replace(path)
+            atomic_json(path, payload)
             self.design_path = path
+            self.saved_payload = payload
+            self.project_store.remember(path)
+            self.project_store.clear()
+            self.update_document_status()
             self.message.set(f"Saved {path.name}.")
         except OSError as exc:
             self.message.set(f"Could not save design: {exc}")
@@ -1131,7 +1328,7 @@ class GeometryWindow:
     def open_layers(self):
         from .layer_ui import LayerWindow
         if self.layer_window is not None and self.layer_window.window.winfo_exists():
-            self.layer_window.window.lift()
+            self.inspector.select(self.layer_panel)
         else:
             self.layer_window = LayerWindow(self)
 
@@ -1145,13 +1342,17 @@ class GeometryWindow:
         self.act(open_window)
 
     def add_burn_test_values(self, x, y, width, height, columns, rows,
-                             min_speed, max_speed, min_power, max_power):
+                             min_speed, max_speed, min_power, max_power, gap=2, passes=1, mode="line", interval=0.2):
         if not 1 <= columns <= 10 or not 1 <= rows <= 10:
             raise ValueError("Rows and columns must be between 1 and 10.")
         speeds = [round(min_speed + (max_speed-min_speed)*i/max(1, columns-1)) for i in range(columns)]
         powers = [round(min_power + (max_power-min_power)*i/max(1, rows-1)) for i in range(rows)]
+        pending = Document()
+        pending.add_burn_test(x, y, width, height, speeds, powers, gap, passes, mode, interval)
         self.checkpoint()
-        indices = self.document.add_burn_test(x, y, width, height, speeds, powers)
+        start = len(self.document.shapes)
+        self.document.shapes.extend(pending.shapes)
+        indices = list(range(start, len(self.document.shapes)))
         self.set_selection(indices, indices[0])
         self.refresh(f"Added {len(indices)} burn-test cells. Labels show speed F and power S; Frame before sending.")
 
@@ -1216,6 +1417,7 @@ class GeometryWindow:
         self.redo_button.configure(state="normal" if self.redo_stack else "disabled")
         self.draw()
         self.update_frame_controls()
+        self.update_document_status()
         if self.layer_window is not None and self.layer_window.window.winfo_exists():
             self.layer_window.refresh()
 
@@ -1362,6 +1564,9 @@ class GeometryWindow:
             self.interaction["changed"] = True
 
     def press(self, event):
+        if self.tool.get() == "pan":
+            self.pan_press(event)
+            return
         if self.tool.get() == "select":
             handle = self.handle_at(event)
             index = self.selected if handle else self.shape_at(event)
@@ -1395,6 +1600,9 @@ class GeometryWindow:
         self.drag_start = self.to_bed(event)
 
     def drag(self, event):
+        if self.interaction and self.interaction.get("mode") == "pan":
+            self.pan_drag(event)
+            return
         if self.interaction and self.interaction.get("mode") in ("move", "resize"):
             current = self.to_bed(event)
             original = self.interaction["shape"]
@@ -1451,6 +1659,9 @@ class GeometryWindow:
             self.preview_item = self.bed.create_rectangle(*coords, outline="#155eef", dash=(4, 2), width=2)
 
     def release(self, event):
+        if self.interaction and self.interaction.get("mode") == "pan":
+            self.pan_release(event)
+            return
         if self.interaction and self.interaction.get("mode") in ("move", "resize"):
             changed = self.interaction.get("changed")
             self.interaction = None
@@ -1534,6 +1745,18 @@ class GeometryWindow:
             bottom = y0-min(bound[1] for bound in bounds)*scale
             top = y0-max(bound[3] for bound in bounds)*scale
             self.bed.create_rectangle(left, top, right, bottom, outline="#155eef", width=2, dash=(6, 3))
+        if self.selected is not None and self.interaction and self.interaction.get("mode") == "move":
+            primary = shape_bounds(self.document.shapes[self.selected])
+            tolerance = 2/scale
+            for index, shape in enumerate(self.document.shapes):
+                if index in selected_indices: continue
+                bounds = shape_bounds(shape)
+                for a in (primary[0], (primary[0]+primary[2])/2, primary[2]):
+                    if any(abs(a-b)<tolerance for b in (bounds[0], (bounds[0]+bounds[2])/2, bounds[2])):
+                        self.bed.create_line(x0+a*scale, y1, x0+a*scale, y0, fill="#b34fb8", dash=(3,3), tags=("alignment-guide",))
+                for a in (primary[1], (primary[1]+primary[3])/2, primary[3]):
+                    if any(abs(a-b)<tolerance for b in (bounds[1], (bounds[1]+bounds[3])/2, bounds[3])):
+                        self.bed.create_line(x0, y0-a*scale, x1, y0-a*scale, fill="#b34fb8", dash=(3,3), tags=("alignment-guide",))
         if self.document.output_shapes():
             points = self.document.frame_points()
             coords = []
@@ -1664,20 +1887,25 @@ class BurnTestWindow:
         self.window.resizable(False, False)
         self.values = {name: tk.StringVar(value=value) for name, value in {
             "x":"10", "y":"10", "width":"15", "height":"10", "columns":"4", "rows":"4",
-            "min_speed":"1000", "max_speed":"6000", "min_power":"100", "max_power":"500"}.items()}
+            "min_speed":"1000", "max_speed":"6000", "min_power":"100", "max_power":"500",
+            "gap":"2", "passes":"1", "interval":"0.2"}.items()}
         frame = ttk.Frame(self.window, padding=18)
         frame.pack(fill="both", expand=True)
         ttk.Label(frame, text="Burn-test grid", style="Title.TLabel").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 10))
         labels = (("x", "Left X · mm"), ("y", "Bottom Y · mm"), ("width", "Cell width · mm"),
                   ("height", "Cell height · mm"), ("columns", "Speed columns"), ("rows", "Power rows"),
                   ("min_speed", "Minimum speed"), ("max_speed", "Maximum speed"),
-                  ("min_power", "Minimum power"), ("max_power", "Maximum power"))
+                  ("min_power", "Minimum power"), ("max_power", "Maximum power"),
+                  ("gap", "Cell gap · mm"), ("passes", "Passes per cell"), ("interval", "Fill spacing · mm"))
         for row, (name, label) in enumerate(labels, 1):
             ttk.Label(frame, text=label).grid(row=row, column=0, sticky="w", pady=3, padx=(0, 18))
             ttk.Entry(frame, textvariable=self.values[name], width=12).grid(row=row, column=1, sticky="e")
-        self.message = tk.StringVar(value="Creates test cells that can be framed and sent directly over USB.")
-        ttk.Label(frame, textvariable=self.message, style="Quiet.TLabel", wraplength=300).grid(row=11, column=0, columnspan=2, sticky="w", pady=(10, 8))
-        ttk.Button(frame, text="Add test grid", command=self.add).grid(row=12, column=0, columnspan=2, sticky="ew")
+        self.mode = tk.StringVar(value="line")
+        ttk.Label(frame, text="Test mode").grid(row=14, column=0, sticky="w")
+        ttk.Combobox(frame, textvariable=self.mode, values=("line", "fill"), state="readonly", width=10).grid(row=14, column=1)
+        self.message = tk.StringVar(value="Each cell keeps its own settings. Compare the result, select the best cell, then save its material preset.")
+        ttk.Label(frame, textvariable=self.message, style="Quiet.TLabel", wraplength=300).grid(row=15, column=0, columnspan=2, sticky="w", pady=(10, 8))
+        ttk.Button(frame, text="Add test grid", command=self.add).grid(row=16, column=0, columnspan=2, sticky="ew")
 
     def add(self):
         try:
@@ -1685,7 +1913,8 @@ class BurnTestWindow:
             integer = lambda name: int(self.values[name].get())
             self.editor.add_burn_test_values(number("x"), number("y"), number("width"), number("height"),
                                              integer("columns"), integer("rows"), integer("min_speed"),
-                                             integer("max_speed"), integer("min_power"), integer("max_power"))
+                                             integer("max_speed"), integer("min_power"), integer("max_power"),
+                                             number("gap"), integer("passes"), self.mode.get(), number("interval"))
             self.window.destroy()
         except (ValueError, IndexError) as exc:
             self.message.set(str(exc))

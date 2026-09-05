@@ -6,8 +6,8 @@ sending over USB.
 
 ## Run
 
-Open **`AtomstackController.exe`** (current version 0.13.0) or the explicitly versioned
-`AtomstackController-0.13.0.exe` from this delivery folder. Close older
+Open **`AtomstackController.exe`** (current version 0.14.0) or the explicitly versioned
+`AtomstackController-0.14.0.exe` from this delivery folder. Close older
 versions first. No Python installation
 is needed for the executable. Choose **Open simulator** to explore without hardware.
 
@@ -293,3 +293,37 @@ but are excluded from Frame, preview, estimates, and direct machine output.
 Undo/Redo includes layer settings, order, assignments, and output switches. Project
 schema 3 persists layers; schema 1 and 2 designs still open without changing their
 individual process settings. Preview closes when layers change.
+
+
+## Daily-workflow tools (0.14.0)
+
+- **File → Import SVG** imports vector paths, basic shapes, groups, transforms, and
+  curves at a 0.05 mm flattening tolerance. Page units and viewBox are respected;
+  the imported artwork must fit the bed. SVG text must first be converted to paths.
+  Images, CSS classes, clipping, masks, filters, rounded-rectangle elements, and
+  unsupported viewport alignments are rejected rather than silently omitted.
+- **File → Save as / Recent designs / Recover autosave** supports everyday project
+  work. Unsaved changes are shown beside the file controls. New, Open, and Close ask
+  whether to save. Changes are autosaved every ten seconds to an independent session
+  file under APPDATA/AtomstackController/designs; startup offers recovery. Autosave
+  is a recovery copy, never an overwrite of the original design.
+- **Cut layers** is now an inspector tab beside the canvas. Choose **fill**, set
+  spacing in millimetres, and save the layer to engrave solid interiors. Fill uses
+  alternating horizontal lines with even-odd holes. Open paths cannot be filled.
+  Each traverse between scan lines is laser-off. Preview and direct output use the
+  same fill paths. Fine/complex fills are bounded to keep the application responsive.
+- **Pan** supports left-drag navigation, alongside middle-drag and wheel zoom.
+  Moving objects shows alignment reference guides. **Arrange** aligns selected
+  edges or centers to the primary object, creates arrays, and adds offset outlines.
+  Arrays preserve group spacing and are rejected atomically if any copy leaves the
+  bed. Offsets support a single closed convex contour per object, with positive
+  outward and negative inward distances; compound/concave offsets are not yet supported.
+- **Burn-test grid** now accepts cell gap, passes, line/fill mode, and fill spacing.
+  Each cell retains individual speed and power. Compare the physical results, select
+  the preferred cell, and use Save current in the material library. Existing material
+  presets can also be loaded directly into the cut-layer editor before saving changes.
+
+Projects use schema 4 and continue loading schema 1–3. Imported paths, fill settings,
+arrays, and layer edits participate in Undo/Redo and atomic project saves. SVG import
+is vector-outline import, not full browser rendering, and this release is not full
+LightBurn feature parity.

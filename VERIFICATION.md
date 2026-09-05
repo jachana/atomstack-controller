@@ -189,3 +189,18 @@ reports, and absence of firmware errors, not an acoustic measurement.
 - Real Tk tests exercise assignment, numeric edits, output toggling, preview closure,
   and atomic Undo. Layer controls were rendered and inspected in the simulator.
 - Physical USB verification remains unavailable: Windows reports no serial devices.
+
+
+## Version 0.14.0
+
+- Tests cover even-odd fill holes, ellipse filling, open-path rejection, layer mode
+  and schema round trips, matching generated/preview segments, arrays and bounds,
+  exact convex offsets and collapse rejection, SVG page units/transforms/curves/arcs,
+  unsupported SVG content, richer material grids, atomic-write failures, recovery
+  isolation, recent files, dirty-state cancellation, and imported-path numeric edits.
+- End-to-end simulation imported an SVG, duplicated it, assigned fill, saved/reopened
+  the project, compared preview paths, streamed the generated job, and finished at
+  zero power. No physical motion or laser test was performed.
+- Native screenshots were inspected at 1440×980 and 1100×820, including embedded
+  layer controls, unsaved status, and a fill job preview. The inspector scrolls at
+  smaller sizes, while connection and STOP controls remain outside it.

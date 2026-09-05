@@ -28,6 +28,12 @@ class Shape:
     mirror_x: bool = False
     mirror_y: bool = False
     layer: str = ""
+    paths: tuple = ()
+    mode: str = "line"
+    interval: float = 0.2
+
+    def __post_init__(self):
+        object.__setattr__(self, "paths", tuple(tuple(tuple(point) for point in path) for path in self.paths))
 
     def validated(self):
         if not isinstance(self.layer, str):
@@ -35,9 +41,9 @@ class Shape:
         values = (self.x, self.y, self.width, self.height)
         if not all(math.isfinite(v) for v in values):
             raise ValueError("Geometry values must be finite numbers.")
-        if self.kind not in ("rectangle", "circle", "line", "text"):
+        if self.kind not in ("rectangle", "circle", "line", "text", "path"):
             raise ValueError("Unknown geometry type.")
-        if self.kind == "line":
+        if self.kind in ("line", "path"):
             if self.width < 0 or self.height < 0 or (self.width == 0 and self.height == 0):
                 raise ValueError("A line needs a non-zero horizontal or vertical length.")
         elif self.width <= 0 or self.height <= 0:
@@ -55,6 +61,15 @@ class Shape:
                 raise ValueError("Text must fit on one line and contain printable characters only.")
             if self.font_family not in FONT_FILES:
                 raise ValueError("Choose Arial, Segoe UI, or Consolas.")
+        if self.mode not in ("line", "fill") or not math.isfinite(self.interval) or not 0.05 <= self.interval <= 5:
+            raise ValueError("Choose line or fill with a line interval between 0.05 and 5 mm.")
+        if self.kind == "path":
+            if not self.paths or sum(map(len, self.paths)) > 100000:
+                raise ValueError("Imported paths must contain at most 100,000 points.")
+            if any(len(path) < 2 or any(len(pt) != 2 or not all(math.isfinite(v) and 0 <= v <= 1 for v in pt) for pt in path) for path in self.paths):
+                raise ValueError("Invalid normalized path coordinates.")
+        if self.mode == "fill" and any(math.dist(path[0], path[-1]) > 1e-7 for path in shape_paths(self)):
+            raise ValueError("Fill requires closed outlines. Close open paths or use Line mode.")
         if not math.isfinite(self.rotation):
             raise ValueError("Rotation must be a finite angle.")
         if not isinstance(self.mirror_x, bool) or not isinstance(self.mirror_y, bool):
@@ -85,6 +100,8 @@ class CutLayer:
     power: int = 300
     passes: int = 1
     enabled: bool = True
+    mode: str = "line"
+    interval: float = 0.2
 
     def validated(self):
         if not isinstance(self.name, str) or not self.name.strip() or self.name != self.name.strip() or len(self.name) > 40 or not self.name.isprintable():
@@ -93,7 +110,7 @@ class CutLayer:
             raise ValueError("Layer output must be on or off.")
         if any(type(v) is not int for v in (self.speed, self.power, self.passes)):
             raise ValueError("Layer speed, power, and passes must be whole numbers.")
-        Shape("rectangle", 0, 0, 1, 1, self.speed, self.power, self.passes).validated()
+        Shape("rectangle", 0, 0, 1, 1, self.speed, self.power, self.passes, mode=self.mode, interval=self.interval).validated()
         return self
 
 
@@ -108,6 +125,12 @@ class Document:
             raise ValueError("Layer names must be unique.")
         if any(shape.layer and shape.layer not in names for shape in self.shapes):
             raise ValueError("A shape refers to a missing cut layer.")
+        layers = {layer.name: layer for layer in self.layers}
+        for shape in self.shapes:
+            if shape.layer:
+                layer = layers[shape.layer]
+                replace(shape, speed=layer.speed, power=layer.power, passes=layer.passes,
+                        mode=layer.mode, interval=layer.interval).validated()
 
     def output_shapes(self):
         """Resolve one common output plan for Frame, preview, and machine sending.
@@ -120,14 +143,14 @@ class Document:
         for layer in self.layers:
             if layer.enabled:
                 result.extend((i, replace(shape, speed=layer.speed, power=layer.power,
-                                          passes=layer.passes).validated())
+                                          passes=layer.passes, mode=layer.mode, interval=layer.interval).validated())
                               for i, shape in enumerate(self.shapes) if shape.layer == layer.name)
         result.extend((i, shape.validated()) for i, shape in enumerate(self.shapes) if not shape.layer)
         return tuple(result)
 
     def to_payload(self):
         self.validate_layers()
-        return {"format": "atomstack-design", "version": 3,
+        return {"format": "atomstack-design", "version": 4,
                 "bed": {"width": BED_X, "height": BED_Y},
                 "shapes": [shape.validated().__dict__ for shape in self.shapes],
                 "layers": [layer.__dict__ for layer in self.layers]}
@@ -137,11 +160,11 @@ class Document:
         if not isinstance(data, dict) or data.get("format") != "atomstack-design" or not isinstance(data.get("shapes"), list):
             raise ValueError("This is not an Atomstack design file.")
         version = data.get("version", 1)
-        if type(version) is not int or version not in (1, 2, 3):
+        if type(version) is not int or version not in (1, 2, 3, 4):
             raise ValueError(f"Unsupported Atomstack design version: {version}.")
         document = cls()
         document.shapes = [Shape(**item).validated() for item in data["shapes"]]
-        if version == 3:
+        if version >= 3:
             if not isinstance(data.get("layers"), list):
                 raise ValueError("Design layers must be a list.")
             document.layers = [CutLayer(**item).validated() for item in data["layers"]]
@@ -158,7 +181,7 @@ class Document:
     def delete(self, index):
         del self.shapes[index]
 
-    def add_burn_test(self, x, y, cell_width, cell_height, speeds, powers, gap=2.0):
+    def add_burn_test(self, x, y, cell_width, cell_height, speeds, powers, gap=2.0, passes=1, mode="line", interval=0.2):
         if not speeds or not powers or len(speeds) > 10 or len(powers) > 10:
             raise ValueError("Burn test requires 1–10 speeds and 1–10 power levels.")
         if cell_width < 5 or cell_height < 5 or gap < 0:
@@ -168,8 +191,8 @@ class Document:
         for row, power in enumerate(powers):
             for column, speed in enumerate(speeds):
                 candidates.append(Shape("rectangle", x + column*(cell_width+gap), y + row*(cell_height+gap),
-                                              cell_width, cell_height, int(speed), int(power), 1,
-                                              note=f"F{int(speed)} · S{int(power)}").validated())
+                                              cell_width, cell_height, int(speed), int(power), passes,
+                                              note=f"F{int(speed)} · S{int(power)}", mode=mode, interval=interval).validated())
         for shape in candidates:
             indices.append(self.add(shape))
         return indices
@@ -199,7 +222,7 @@ class Document:
         for source_index, shape in output:
             index = source_index + 1
             shape.validated()
-            paths = shape_paths(shape)
+            paths = burn_paths(shape)
             safe_text = shape.text.encode("ascii", "replace").decode("ascii")
             description = f"text '{safe_text}'" if shape.kind == "text" else shape.kind
             lines.append(f"; {index}: {description} X{shape.x:g} Y{shape.y:g} {shape.width:g}x{shape.height:g} - F{shape.speed} S{shape.power} - {shape.passes} pass(es)")
@@ -230,7 +253,7 @@ class Document:
         for shape_index, shape in output:
             shape.validated()
             for pass_index in range(shape.passes):
-                for points in shape_paths(shape):
+                for points in burn_paths(shape):
                     first = points[0]
                     if current != first:
                         segments.append(("rapid", current, first, rapid_feed, 0, shape_index, pass_index))
@@ -261,6 +284,8 @@ def path_points(shape):
 
 def _base_shape_paths(shape):
     x, y, w, h = shape.x, shape.y, shape.width, shape.height
+    if shape.kind == "path":
+        return [[(x+px*w, y+py*h) for px, py in path] for path in shape.paths]
     if shape.kind == "rectangle":
         return [[(x, y), (x + w, y), (x + w, y + h), (x, y + h), (x, y)]]
     if shape.kind == "line":
@@ -310,3 +335,54 @@ def shape_bounds(shape):
     return tuple(stable(value) for value in
                  (min(point[0] for point in points), min(point[1] for point in points),
                   max(point[0] for point in points), max(point[1] for point in points)))
+
+
+def path_shape(paths, **settings):
+    """Store world paths as normalized geometry so ordinary transforms still work."""
+    points = [point for path in paths for point in path]
+    if not points:
+        raise ValueError("No usable paths found.")
+    left, right = min(p[0] for p in points), max(p[0] for p in points)
+    bottom, top = min(p[1] for p in points), max(p[1] for p in points)
+    width, height = right-left, top-bottom
+    normalized = tuple(tuple(((x-left)/width if width else 0, (y-bottom)/height if height else 0)
+                              for x, y in path) for path in paths)
+    return Shape("path", left, bottom, width, height, paths=normalized, **settings).validated()
+
+
+@lru_cache(maxsize=128)
+def burn_paths(shape):
+    paths = shape_paths(shape)
+    if shape.mode == "line":
+        return tuple(tuple(path) for path in paths)
+    if any(math.dist(path[0], path[-1]) > 1e-7 for path in paths):
+        raise ValueError("Fill requires closed outlines.")
+    # Half-open edge intersections implement even-odd fill and preserve holes.
+    _, bottom, _, top = shape_bounds(shape)
+    if sum(map(len, paths)) * max(1, (top-bottom)/shape.interval) > 3000000:
+        raise ValueError("Fill is too complex. Increase line spacing or simplify the paths.")
+    lines = []
+    y = bottom + shape.interval/2
+    row = 0
+    while y < top:
+        intersections = []
+        for path in paths:
+            for (x1, y1), (x2, y2) in zip(path, path[1:]):
+                if (y1 <= y < y2) or (y2 <= y < y1):
+                    intersections.append(x1 + (y-y1)*(x2-x1)/(y2-y1))
+        intersections.sort()
+        if len(intersections) % 2:
+            raise ValueError("This outline cannot be filled reliably.")
+        pairs = [(intersections[i], intersections[i+1]) for i in range(0, len(intersections), 2)]
+        if row % 2:
+            pairs.reverse()
+        for left, right in pairs:
+            if right-left > 1e-8:
+                lines.append(((left, y), (right, y)) if not row % 2 else ((right, y), (left, y)))
+        if len(lines) > 100000:
+            raise ValueError("Fill is too dense. Increase line interval or reduce the design.")
+        row += 1
+        y = bottom + (row+0.5)*shape.interval
+    if not lines:
+        raise ValueError("Fill interval is too large for this shape.")
+    return tuple(lines)

@@ -6,24 +6,42 @@ from .geometry import CutLayer
 
 
 class LayerWindow:
-    def __init__(self, editor):
+    def __init__(self, editor, parent=None):
         self.editor = editor
-        self.window = tk.Toplevel(editor.window)
-        self.window.title("Cut layers · execution order")
-        self.window.geometry("760x530")
-        self.window.minsize(700, 500)
-        outer = ttk.Frame(self.window, padding=20)
-        outer.pack(fill="both", expand=True)
-        ttk.Label(outer, text="Cut layers", style="Title.TLabel").pack(anchor="w")
-        ttk.Label(outer, text="Run top to bottom. Unassigned objects run last with individual settings.",
-                  style="Quiet.TLabel").pack(anchor="w", pady=(4, 14))
+        embedded = parent is not None
+        if embedded:
+            self.window = ttk.Frame(parent)
+            self.window.pack(fill="both", expand=True)
+            canvas = tk.Canvas(self.window, highlightthickness=0, width=285, background="#f5f7fb")
+            scroll = ttk.Scrollbar(self.window, orient="vertical", command=canvas.yview)
+            scroll.pack(side="right", fill="y")
+            canvas.pack(side="left", fill="both", expand=True)
+            canvas.configure(yscrollcommand=scroll.set)
+            outer = ttk.Frame(canvas, padding=8)
+            item = canvas.create_window((0,0), window=outer, anchor="nw")
+            outer.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+            canvas.bind("<Configure>", lambda e: canvas.itemconfigure(item, width=e.width))
+        else:
+            self.window = tk.Toplevel(editor.window)
+            self.window.title("Cut layers · execution order")
+            self.window.geometry("800x660")
+            self.window.minsize(740, 620)
+            outer = ttk.Frame(self.window, padding=20)
+            outer.pack(fill="both", expand=True)
+        if not embedded:
+            ttk.Label(outer, text="Cut layers", style="Title.TLabel").pack(anchor="w")
+        ttk.Label(outer, text="Top to bottom · unassigned objects last" if embedded else "Run top to bottom. Unassigned objects run last with individual settings.",
+                  style="Quiet.TLabel", wraplength=270 if embedded else 740).pack(anchor="w", pady=(4, 14))
         self.table = ttk.Treeview(outer, columns=("name", "speed", "power", "passes", "output", "objects"),
-                                  show="headings", selectmode="browse", height=7)
+                                  show="headings", selectmode="browse", height=4 if embedded else 7)
         for key, label, width in (("name", "Layer", 210), ("speed", "mm/min", 95),
                                   ("power", "Power / 1000", 100), ("passes", "Passes", 60),
                                   ("output", "Output", 70), ("objects", "Objects", 65)):
             self.table.heading(key, text=label)
             self.table.column(key, width=width, stretch=key == "name")
+        if embedded:
+            self.table.configure(displaycolumns=("name", "output"))
+            self.table.column("name", width=160)
         self.table.pack(fill="both", expand=True)
         self.table.bind("<<TreeviewSelect>>", self.load)
         self.fields = {key: tk.StringVar(value=value) for key, value in
@@ -33,23 +51,50 @@ class LayerWindow:
         for key, label, width in (("name", "Name", 22), ("speed", "Speed · mm/min", 11),
                                   ("power", "Power · 0–1000", 12), ("passes", "Passes", 6)):
             group = ttk.Frame(row)
-            group.pack(side="left", padx=(0, 10))
-            ttk.Label(group, text=label).pack(anchor="w")
-            ttk.Entry(group, textvariable=self.fields[key], width=width).pack()
+            group.pack(side="top" if embedded else "left", fill="x" if embedded else "none", padx=(0, 10))
+            ttk.Label(group, text=label).pack(side="left" if embedded else "top", anchor="w")
+            ttk.Entry(group, textvariable=self.fields[key], width=12 if embedded else width).pack(side="right" if embedded else "top")
         self.enabled = tk.BooleanVar(value=True)
-        ttk.Checkbutton(row, text="Output on", variable=self.enabled).pack(side="left", pady=(18, 0))
+        ttk.Checkbutton(row, text="Output on", variable=self.enabled).pack(side="top" if embedded else "left", pady=(8, 0))
+        process = ttk.Frame(outer)
+        process.pack(fill="x", pady=4)
+        self.mode = tk.StringVar(value="line")
+        self.interval = tk.StringVar(value="0.2")
+        ttk.Label(process, text="Mode").pack(side="left")
+        ttk.Combobox(process, textvariable=self.mode, values=("line", "fill"), state="readonly", width=6).pack(side="left", padx=4)
+        ttk.Label(process, text="Spacing mm").pack(side="left")
+        ttk.Entry(process, textvariable=self.interval, width=5).pack(side="left", padx=4)
+        ttk.Label(outer, text="Fill uses alternating scan lines; spacing controls density.",
+                  wraplength=270 if embedded else 740, style="Quiet.TLabel").pack(anchor="w")
         actions = ttk.Frame(outer)
         actions.pack(fill="x", pady=4)
-        for label, action in (("Add layer", self.add), ("Save changes", self.save),
-                               ("Move up", lambda: self.move(-1)), ("Move down", lambda: self.move(1))):
-            ttk.Button(actions, text=label, command=lambda f=action: self.act(f)).pack(side="left", padx=(0, 6))
+        for n, (label, action) in enumerate((("Add layer", self.add), ("Save changes", self.save),
+                               ("Move up", lambda: self.move(-1)), ("Move down", lambda: self.move(1)))):
+            button = ttk.Button(actions, text=label, command=lambda f=action: self.act(f))
+            if embedded:
+                actions.columnconfigure(n%2, weight=1)
+                button.grid(row=n//2, column=n%2, sticky="ew", padx=1, pady=1)
+            else:
+                button.pack(side="left", padx=(0,6))
         assignment = ttk.Frame(outer)
         assignment.pack(fill="x", pady=(8, 0))
-        ttk.Button(assignment, text="Assign selected objects", command=lambda: self.act(self.assign)).pack(side="left", padx=(0, 6))
-        ttk.Button(assignment, text="Use individual settings", command=lambda: self.act(self.detach)).pack(side="left")
+        ttk.Button(assignment, text="Assign selected objects", command=lambda: self.act(self.assign)).pack(side="top" if embedded else "left", fill="x" if embedded else "none", padx=(0, 6))
+        ttk.Button(assignment, text="Use individual settings", command=lambda: self.act(self.detach)).pack(side="top" if embedded else "left", fill="x" if embedded else "none")
         self.message = tk.StringVar(value="Select objects in the design, choose a layer here, then assign them.")
-        ttk.Label(outer, textvariable=self.message, wraplength=700, style="Quiet.TLabel").pack(fill="x", pady=(12, 0))
+        ttk.Label(outer, textvariable=self.message, wraplength=270 if embedded else 740, style="Quiet.TLabel").pack(fill="x", pady=(12, 0))
+        presets = ttk.Frame(outer)
+        presets.pack(fill="x", pady=8)
+        self.preset_name = tk.StringVar()
+        self.preset_combo = ttk.Combobox(presets, textvariable=self.preset_name, state="readonly", values=editor.materials.names, width=20)
+        self.preset_combo.pack(fill="x")
+        ttk.Button(presets, text="Load material settings", command=lambda: self.act(self.load_material)).pack(fill="x", pady=3)
         self.refresh()
+
+    def load_material(self):
+        preset = self.editor.materials.get(self.preset_name.get())
+        for key in ("speed", "power", "passes"):
+            self.fields[key].set(str(getattr(preset, key)))
+        self.message.set("Material settings loaded. Save changes to apply them to the layer.")
 
     def act(self, action):
         try:
@@ -69,11 +114,14 @@ class LayerWindow:
 
     def candidate(self):
         return CutLayer(self.fields["name"].get().strip(), int(self.fields["speed"].get()),
-                        int(self.fields["power"].get()), int(self.fields["passes"].get()), self.enabled.get()).validated()
+                        int(self.fields["power"].get()), int(self.fields["passes"].get()), self.enabled.get(),
+                        self.mode.get(), float(self.interval.get())).validated()
 
     def refresh(self):
         selected = self.table.selection()
         name = self.table.item(selected[0], "values")[0] if selected else None
+        if hasattr(self, "preset_combo"):
+            self.preset_combo.configure(values=self.editor.materials.names)
         self.table.delete(*self.table.get_children())
         for i, layer in enumerate(self.editor.document.layers):
             count = sum(s.layer == layer.name for s in self.editor.document.shapes)
@@ -90,6 +138,8 @@ class LayerWindow:
         for key in self.fields:
             self.fields[key].set(str(getattr(layer, key)))
         self.enabled.set(layer.enabled)
+        self.mode.set(layer.mode)
+        self.interval.set(str(layer.interval))
 
     def changed(self, message):
         self.editor.refresh(message)
@@ -113,6 +163,9 @@ class LayerWindow:
         if any(j != i and l.name == layer.name for j, l in enumerate(self.editor.document.layers)):
             raise ValueError("Choose a unique layer name.")
         old = self.editor.document.layers[i].name
+        for shape in self.editor.document.shapes:
+            if shape.layer == old:
+                replace(shape, mode=layer.mode, interval=layer.interval).validated()
         self.editor.checkpoint()
         self.editor.document.layers[i] = layer
         self.editor.document.shapes = [replace(s, layer=layer.name) if s.layer == old else s
@@ -135,7 +188,10 @@ class LayerWindow:
         indices = self.editor.selected_indices()
         if i < 0 or not indices:
             raise ValueError("Select design objects and choose a layer first.")
-        name = self.editor.document.layers[i].name
+        layer = self.editor.document.layers[i]
+        name = layer.name
+        for index in indices:
+            replace(self.editor.document.shapes[index], mode=layer.mode, interval=layer.interval).validated()
         self.editor.checkpoint()
         for index in indices:
             self.editor.document.update(index, layer=name)
@@ -151,6 +207,6 @@ class LayerWindow:
         for index in indices:
             shape = self.editor.document.shapes[index]
             layer = layers.get(shape.layer)
-            values = {key: getattr(layer, key) for key in ("speed", "power", "passes")} if layer else {}
+            values = {key: getattr(layer, key) for key in ("speed", "power", "passes", "mode", "interval")} if layer else {}
             self.editor.document.update(index, layer="", **values)
         self.changed(f"{len(indices)} objects now use individual settings and output is on.")

@@ -38,6 +38,11 @@ class CanvasBehaviour(unittest.TestCase):
         if tk is None:
             raise unittest.SkipTest("tkinter is not installed")
         from atomstack.ui import App
+        cls.state_folder = tempfile.TemporaryDirectory()
+        cls.env_patch = mock.patch.dict("os.environ", {"ATOMSTACK_STATE_DIR": cls.state_folder.name})
+        cls.env_patch.start()
+        cls.save_prompt = mock.patch("atomstack.ui.messagebox.askyesnocancel", return_value=False)
+        cls.save_prompt.start()
         try:
             cls.root = tk.Tk()
         except Exception as exc:
@@ -49,6 +54,9 @@ class CanvasBehaviour(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
+        cls.save_prompt.stop()
+        cls.env_patch.stop()
+        cls.state_folder.cleanup()
         if cls.app is not None:
             try:
                 cls.app.controller.disconnect()
@@ -192,7 +200,7 @@ class CanvasBehaviour(unittest.TestCase):
             editor.design_path = save_path
             editor.save_design()
             saved = json.loads(save_path.read_text(encoding="utf-8"))
-            self.assertEqual(saved["version"], 3)
+            self.assertEqual(saved["version"], 4)
             self.assertEqual(saved["shapes"][0]["rotation"], 90)
             self.assertTrue(saved["shapes"][0]["mirror_x"])
             self.assertEqual(list(Path(folder).glob("*.tmp")), [],
@@ -287,6 +295,54 @@ class CanvasBehaviour(unittest.TestCase):
         finally:
             manager.window.destroy()
             editor.layer_window = None
+
+    def test_unsaved_cancel_and_successful_save(self):
+        editor = self.app.geometry
+        editor.saved_payload = editor.document.to_payload()
+        self.rectangle()
+        self.assertTrue(editor.dirty())
+        with mock.patch("atomstack.ui.messagebox.askyesnocancel", return_value=None):
+            self.assertFalse(editor.confirm_discard())
+        with tempfile.TemporaryDirectory() as directory:
+            editor.design_path = Path(directory)/"saved.atomdesign"
+            editor.save_design()
+            self.assertFalse(editor.dirty())
+            editor.set_selection((0,),0)
+            editor.nudge("Right")
+            self.assertTrue(editor.dirty())
+            editor.undo()
+            self.assertFalse(editor.dirty())
+
+    def test_imported_paths_survive_numeric_editing(self):
+        from atomstack.geometry import path_shape
+        editor = self.app.geometry
+        shape = path_shape([[(10,10),(20,10),(20,20),(10,10)]])
+        editor.document.shapes.append(shape)
+        editor.set_selection((0,),0)
+        editor.refresh()
+        editor.fields["x"].set("30")
+        editor.apply()
+        self.assertEqual(editor.document.shapes[0].paths, shape.paths)
+        self.assertEqual(editor.document.shapes[0].x,30)
+
+    def test_recovery_restores_unsaved_document(self):
+        from atomstack.projects import ProjectStore
+        from atomstack.geometry import Document
+        editor = self.app.geometry
+        with tempfile.TemporaryDirectory() as directory:
+            source = ProjectStore(directory)
+            document = Document()
+            document.add(Shape("rectangle",10,10,20,10))
+            source.autosave(document.to_payload(),None)
+            original_store = editor.project_store
+            try:
+                editor.project_store = ProjectStore(directory)
+                editor.recover_design()
+                self.assertEqual(editor.document.shapes,document.shapes)
+                self.assertTrue(editor.dirty())
+                self.assertTrue(source.recovery.exists())
+            finally:
+                editor.project_store = original_store
 
 
 if __name__ == "__main__":

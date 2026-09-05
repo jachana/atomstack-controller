@@ -82,14 +82,14 @@ Verified against the code, not against `ROADMAP.md`, which is out of date on rot
 | Rotate 90 degrees, flip H and V | Done | Bounds enforced on the transformed path |
 | Z-order (bring forward, send backward) | Done | This is stacking order, not cut layers |
 | Zoom, pan, fit | Done | Cursor-anchored zoom fixed 2026-09-04 |
-| Project files | Done | Open and save, no dirty-state tracking |
+| Project files | Done | Atomic saves, dirty state, schema migration, recovery |
 | Job preview with time and distance | Done | Separate read-only window |
 | Named cut layers | Done | Shared settings, execution order, output switches; v0.13 |
-| SVG import | Missing | Blocks every design not drawn in-app |
+| SVG import | Implemented | Bounded vector subset, 0.05 mm tolerance; unsupported effects rejected |
 | DXF import | Missing | |
 | Arbitrary-angle rotation | Missing | Model stores any angle; UI offers only 90 |
-| Dirty state, autosave, crash recovery | Missing | Unsaved work is currently lost silently |
-| Recent files | Missing | |
+| Dirty state, autosave, crash recovery | Implemented | Save prompts, 10-second recovery copies, startup recovery |
+| Recent files | Implemented | Last 10 project paths |
 | Kerning, text on a path | Missing | |
 | Weld and boolean operations | Missing | |
 | Job origin modes, array copies | Missing | |
@@ -207,3 +207,13 @@ job origin modes land, that needs to be either measured properly or designed aro
 Is a read-only hardware soak enough to keep claiming safety, or does the project need a
 supervised motion test with the laser physically disconnected? The safety contract is
 currently argued from code review rather than from evidence.
+
+
+## 0.14 workflow update
+
+The five requested daily-workflow areas now have working implementations: project
+protection, vector SVG import, an embedded layer inspector and navigation controls,
+line-fill engraving, and production arrays/alignment/convex offsets/material grids.
+SVG effects and general concave/compound offsets remain unsupported. See README for
+exact supported input and operation limits. Physical testing remains unavailable
+while Windows reports no USB serial devices; motion evidence is simulation only.
