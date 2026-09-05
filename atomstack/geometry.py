@@ -74,10 +74,6 @@ class Shape:
             raise ValueError("Rotation must be a finite angle.")
         if not isinstance(self.mirror_x, bool) or not isinstance(self.mirror_y, bool):
             raise ValueError("Mirror values must be true or false.")
-        left, bottom, right, top = shape_bounds(self)
-        tolerance = 1e-7
-        if left < -tolerance or bottom < -tolerance or right > BED_X+tolerance or top > BED_Y+tolerance:
-            raise ValueError(f"Transformed geometry must fit inside the {BED_X:g} × {BED_Y:g} mm bed.")
         return self
 
     @property
@@ -197,10 +193,24 @@ class Document:
             indices.append(self.add(shape))
         return indices
 
+    def offbed(self):
+        """Enabled objects that lie off the bed, as (index, shape) pairs."""
+        return tuple((index, shape) for index, shape in self.output_shapes() if outside_bed(shape))
+
+    def require_on_bed(self, action):
+        off = self.offbed()
+        if off:
+            names = ", ".join(str(index + 1) for index, _ in off[:4])
+            more = "" if len(off) <= 4 else f" and {len(off) - 4} more"
+            raise ValueError(
+                f"Object {names}{more} {'lies' if len(off) == 1 else 'lie'} outside the "
+                f"{BED_X:g} × {BED_Y:g} mm bed. Scale or move it in before {action}.")
+
     def frame_points(self, margin=2.0):
         output = self.output_shapes()
         if not output:
             raise ValueError("Enable a layer or add geometry before framing.")
+        self.require_on_bed("framing")
         if not math.isfinite(margin) or margin < 0 or margin > 20:
             raise ValueError("Frame margin must be between 0 and 20 mm.")
         bounds = [shape_bounds(shape) for _, shape in output]
@@ -214,6 +224,7 @@ class Document:
         output = self.output_shapes()
         if not output:
             raise ValueError("Enable a layer or add geometry before sending a job.")
+        self.require_on_bed("sending")
         if machine_origin is None or len(machine_origin) != 2 or not all(math.isfinite(v) for v in machine_origin):
             raise ValueError("A confirmed live machine origin is required for safe G-code export.")
         ox, oy = machine_origin
@@ -321,6 +332,20 @@ def _cached_shape_paths(shape):
 def shape_paths(shape):
     return [list(path) for path in _cached_shape_paths(shape)]
 
+
+
+def outside_bed(shape):
+    """True when any part of the shape lies off the bed.
+
+    Geometry is allowed to sit there. An import can arrive larger than the
+    machine and be scaled or moved in, which cannot happen if the document
+    refuses to hold it. What must not happen is sending it, so the machine
+    facing paths ask this question instead of the constructor.
+    """
+    left, bottom, right, top = shape_bounds(shape)
+    tolerance = 1e-7
+    return (left < -tolerance or bottom < -tolerance
+            or right > BED_X + tolerance or top > BED_Y + tolerance)
 
 def shape_bounds(shape):
     points = [point for path in _cached_shape_paths(shape) for point in path]

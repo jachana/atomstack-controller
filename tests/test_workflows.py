@@ -46,7 +46,11 @@ def test_array_preserves_group_spacing_and_rejects_overflow():
     copies=array_copies([shape],3,2,2,3)
     assert len(copies)==5
     assert (copies[-1].x,copies[-1].y)==(54,23)
-    with pytest.raises(ValueError): array_copies([shape],30,30,2,3)
+    # An array that runs off the bed is produced; sending is what refuses it.
+    overflowing=array_copies([shape],30,30,2,3)
+    doc=Document();doc.shapes.extend([shape]+overflowing)
+    assert doc.offbed()
+    with pytest.raises(ValueError,match='outside the'): doc.gcode((0,0))
     assert shape.x==10
 
 

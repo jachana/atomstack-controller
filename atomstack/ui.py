@@ -1505,8 +1505,16 @@ class GeometryWindow:
         position = self.controller.app_position
         self.move_position.set(f"X {position[0]:.3f}   Y {position[1]:.3f}" if position else "Home required")
         has_output = bool(self.document.output_shapes())
+        offbed = self.document.offbed() if has_output else ()
         if not has_output:
             ready, reason = False, "Enable layer output or add geometry to enable Frame."
+        elif offbed:
+            # Off-bed geometry is allowed to sit in the design; it just cannot go
+            # to the machine, so say which object and why rather than greying out.
+            names = ", ".join(str(index + 1) for index, _ in offbed[:4])
+            ready = False
+            reason = (f"Object {names} {'is' if len(offbed) == 1 else 'are'} outside the bed. "
+                      "Scale or move it in to enable Frame and Send.")
         else:
             ready, reason = self.controller.frame_readiness()
         self.frame_button.configure(state="normal" if ready else "disabled")
@@ -1637,9 +1645,21 @@ class GeometryWindow:
         return "break"
 
     def fit_view(self):
-        self.view_zoom = 1.0
+        """Frame the bed, widening only far enough to show geometry beyond it.
+
+        An import larger than the machine has to be visible before it can be
+        scaled to fit, so the view shrinks to include it. Geometry inside the
+        bed keeps the familiar 100% view.
+        """
         self.pan_x = self.pan_y = 0.0
-        self.zoom_text.set("100%")
+        zoom = 1.0
+        if self.document.shapes:
+            bounds = [shape_bounds(shape) for shape in self.document.shapes]
+            left, bottom = min(0.0, *(b[0] for b in bounds)), min(0.0, *(b[1] for b in bounds))
+            right, top = max(BED_X, *(b[2] for b in bounds)), max(BED_Y, *(b[3] for b in bounds))
+            zoom = clamp_zoom(1.0, min(BED_X / (right - left), BED_Y / (top - bottom)), 0.5, 1.0)
+        self.view_zoom = zoom
+        self.zoom_text.set(f"{self.view_zoom * 100:.0f}%")
         self.draw()
 
     def pan_press(self, event):
@@ -1739,13 +1759,19 @@ class GeometryWindow:
                 bounds = [shape_bounds(shape) for shape in originals]
                 left, right = min(b[0] for b in bounds), max(b[2] for b in bounds)
                 bottom, top = min(b[1] for b in bounds), max(b[3] for b in bounds)
-                dx = max(-left, min(BED_X-right, dx))
-                dy = max(-bottom, min(BED_Y-top, dy))
+                # Only clamp on an axis the selection actually fits, or an
+                # oversized import could never be dragged back onto the bed.
+                if right - left <= BED_X:
+                    dx = max(-left, min(BED_X-right, dx))
+                if top - bottom <= BED_Y:
+                    dy = max(-bottom, min(BED_Y-top, dy))
                 if self.snap_enabled.get():
                     dx = self.snap(original.x+dx)-original.x
                     dy = self.snap(original.y+dy)-original.y
-                    dx = max(-left, min(BED_X-right, dx))
-                    dy = max(-bottom, min(BED_Y-top, dy))
+                    if right - left <= BED_X:
+                        dx = max(-left, min(BED_X-right, dx))
+                    if top - bottom <= BED_Y:
+                        dy = max(-bottom, min(BED_Y-top, dy))
                 candidates = {index: {"x": shape.x+dx, "y": shape.y+dy}
                               for index, shape in self.interaction["shapes"].items()}
             elif self.interaction["mode"] == "rotate":
@@ -1905,11 +1931,15 @@ class GeometryWindow:
                     if any(abs(a-b)<tolerance for b in (bounds[1], (bounds[1]+bounds[3])/2, bounds[3])):
                         self.bed.create_line(x0, y0-a*scale, x1, y0-a*scale, fill="#b34fb8", dash=(3,3), tags=("alignment-guide",))
         if self.document.output_shapes():
-            points = self.document.frame_points()
+            try:
+                points = self.document.frame_points()
+            except ValueError:
+                points = ()  # Off the bed: there is no outline to trace yet.
             coords = []
             for x, y in points:
                 coords.extend((x0 + x * scale, y0 - y * scale))
-            self.bed.create_line(*coords, fill="#d66a1f", width=2, dash=(7, 4))
+            if coords:
+                self.bed.create_line(*coords, fill="#d66a1f", width=2, dash=(7, 4))
 
 
 class JobPreviewWindow:

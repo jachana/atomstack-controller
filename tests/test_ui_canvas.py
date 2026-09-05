@@ -259,6 +259,36 @@ class CanvasBehaviour(unittest.TestCase):
         self.assertEqual(tuple(editor.document.shapes), before)
         self.assertIn("unsupported", editor.message.get())
 
+    def test_an_oversized_object_is_editable_but_blocks_frame_and_send(self):
+        editor = self.app.geometry
+        editor.document.shapes.append(Shape("rectangle", 300, 10, 100, 40))
+        editor.set_selection((0,), 0)
+        editor.refresh()
+        self.assertEqual(len(editor.document.offbed()), 1)
+        self.assertEqual(str(editor.frame_button.cget("state")), "disabled")
+        self.assertEqual(str(editor.send_button.cget("state")), "disabled")
+        self.assertIn("outside the bed", editor.frame_status.get())
+        # Preview still works: looking at it is how you decide what to change.
+        self.assertEqual(str(editor.preview_button.cget("state")), "normal")
+        # And it can be dragged back on, which a clamped axis would prevent.
+        view = editor.transform()
+        editor.press(fake_event(*view.to_canvas(320, 20)))
+        editor.drag(fake_event(*view.to_canvas(240, 20)))
+        editor.release(fake_event(*view.to_canvas(240, 20)))
+        self.assertLess(editor.document.shapes[0].x, 300)
+
+    def test_fitting_the_view_shows_geometry_that_overhangs_the_bed(self):
+        editor = self.app.geometry
+        editor.fit_view()
+        self.assertEqual(editor.view_zoom, 1.0)
+        editor.document.shapes.append(Shape("rectangle", 0, 0, 520, 240))
+        editor.fit_view()
+        self.assertLess(editor.view_zoom, 1.0)
+        # The whole object is now inside the drawn canvas.
+        view = editor.transform()
+        right = view.to_canvas(520, 0)[0]
+        self.assertLessEqual(right, editor.bed.winfo_width())
+
     def test_text_resize_handles_match_the_nominal_editable_box(self):
         editor = self.app.geometry
         text = Shape("text", 10, 20, 100, 30, text="I")

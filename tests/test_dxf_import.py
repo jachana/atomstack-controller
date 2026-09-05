@@ -56,9 +56,16 @@ def test_drawing_units_scale_the_result(tmp_path):
     assert shape_bounds(unitless) == pytest.approx((0, 0, 20, 10))
 
 
-def test_a_drawing_too_big_for_the_bed_is_refused_not_scaled_down(tmp_path):
-    with pytest.raises(ValueError, match="bed"):
-        dxf(tmp_path, SQUARE, header=[(9, "$INSUNITS"), (70, "1")])  # 20 in = 508 mm
+def test_a_drawing_too_big_for_the_bed_imports_at_its_real_size(tmp_path):
+    """It has to exist before it can be scaled down; sending is what refuses."""
+    from atomstack.geometry import Document, outside_bed
+    shape, = dxf(tmp_path, SQUARE, header=[(9, "$INSUNITS"), (70, "1")])  # 20 in = 508 mm
+    assert shape_bounds(shape) == pytest.approx((0, 0, 20 * 25.4, 10 * 25.4))
+    assert outside_bed(shape)
+    document = Document()
+    document.add(shape)
+    with pytest.raises(ValueError, match="outside the"):
+        document.gcode((0, 0))
 
 
 def test_arcs_flatten_inside_the_stated_tolerance(tmp_path):
