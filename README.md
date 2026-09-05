@@ -6,8 +6,8 @@ sending over USB.
 
 ## Run
 
-Open **`AtomstackController.exe`** (current version 0.11.0) or the explicitly versioned
-`AtomstackController-0.11.0.exe` from this delivery folder. Close older
+Open **`AtomstackController.exe`** (current version 0.12.0) or the explicitly versioned
+`AtomstackController-0.12.0.exe` from this delivery folder. Close older
 versions first. No Python installation
 is needed for the executable. Choose **Open simulator** to explore without hardware.
 
@@ -253,6 +253,16 @@ Version 0.11.0 adds true multi-selection with Ctrl-click and Ctrl+A, combined-bo
 dragging and nudging, group duplicate/delete, group alignment and layer movement,
 horizontal/vertical distribution, shared process settings, and atomic Undo for every
 group operation.
+
+Version 0.12.0 adds 90-degree rotation and horizontal/vertical mirroring for individual
+objects and selections. The canvas, machine overlay, Frame outline, job preview, and
+direct machine output all use the same transformed paths and enforced bed bounds. The
+inspector shows the exact transformed or combined bounds. Project files now use schema
+version 2, continue to open version 1 files, and reject unknown future versions without
+changing the current design. Undo restores the project filename together with geometry,
+and an open job preview closes as soon as the design changes so it cannot misrepresent
+the job that will be sent. Rotated objects can still be sized numerically; drag-resize
+handles are hidden until arbitrary-angle handles are implemented.
 
 Build the standalone executable from this folder (PyInstaller 6.x):
 

@@ -64,3 +64,9 @@ Version 0.11 represents multi-selection with blue object outlines and one dashed
 group boundary. Exact geometry stays anchored to a primary object in the inspector;
 shared process values apply to the selected set. Group translation clamps the combined
 bounds to the bed, preserving spacing while snapping the primary object to the grid.
+
+Version 0.12 renders rotation and mirroring from the same transformed path model used
+by Frame, preview, and direct output. The inspector distinguishes the object's local
+origin from its exact transformed bounds. Project schema version 2 persists transform
+state and safely migrates version 1 files. Any design mutation closes the current job
+preview, keeping the visible preview tied to the geometry from which it was generated.

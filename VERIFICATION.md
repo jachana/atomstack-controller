@@ -164,3 +164,16 @@ reports, and absence of firmware errors, not an acoustic measurement.
   canvas drag with preserved offsets, group delete, and complete restoration by Undo.
 - A dedicated native capture verifies extended list selection, selected-object styling,
   the combined dashed boundary, and an explicit selected-count inspector state.
+
+## Version 0.12.0
+
+- Geometry tests verify exact rotated and mirrored paths, transformed bounds, Frame
+  bounds, generated machine coordinates, finite angles, and cached-path isolation.
+- Native canvas tests verify that rotated selections show their exact bounds and hide
+  inactive resize handles, while unrotated selections retain four working handles.
+- Project tests verify schema version 2 persistence, version 1 migration defaults,
+  rejection of unknown future versions without mutation, and Undo restoration of both
+  geometry and the associated project filename.
+- Preview invalidation is exercised through a real Tk window: changing a design closes
+  its existing preview before the mutation, preventing a stale preview from remaining
+  visible beside newer geometry.

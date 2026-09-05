@@ -548,11 +548,13 @@ class GeometryWindow:
         self.snap_enabled = tk.BooleanVar(value=True)
         self.grid_size = tk.StringVar(value="1 mm")
         self.design_path = None
+        self.preview_window = None
         self.fields = {name: tk.StringVar(value=value) for name, value in {
             "x": "10", "y": "10", "width": "40", "height": "30",
             "speed": "1000", "power": "300", "passes": "1", "text": "ATOMSTACK", "rotation": "0"}.items()}
         self.mirror_x = tk.BooleanVar(value=False)
         self.mirror_y = tk.BooleanVar(value=False)
+        self.bounds_text = tk.StringVar(value="Bounds · no selection")
         self.font_family = tk.StringVar(value="Arial")
         self.frame_speed = tk.StringVar(value="6000")
         self.material_name = tk.StringVar()
@@ -662,7 +664,7 @@ class GeometryWindow:
         self.listbox.bind("<<ListboxSelect>>", self.select)
         self.selection_status = tk.StringVar(value="No selection")
         ttk.Label(side, textvariable=self.selection_status, style="Section.TLabel").pack(anchor="w", pady=(0, 8))
-        labels = {"text": "Text", "x": "Left edge X · mm", "y": "Bottom edge Y · mm", "width": "Width · mm", "height": "Height · mm", "rotation": "Rotation · degrees",
+        labels = {"text": "Text", "x": "Object origin X · mm", "y": "Object origin Y · mm", "width": "Width · mm", "height": "Height · mm", "rotation": "Rotation · degrees",
                   "speed": "Cut speed · mm/min", "power": "Power · 0–1000", "passes": "Number of passes"}
         self.field_entries = {}
         for name, label in labels.items():
@@ -683,6 +685,8 @@ class GeometryWindow:
         self.mirror_x_button.pack(side="left")
         self.mirror_y_button = ttk.Checkbutton(mirror_row, text="Flip V", variable=self.mirror_y)
         self.mirror_y_button.pack(side="left", padx=8)
+        ttk.Label(side, textvariable=self.bounds_text, style="Quiet.TLabel", wraplength=265,
+                  justify="left").pack(anchor="w", pady=(4, 0))
         value_actions = ttk.Frame(side)
         value_actions.pack(fill="x", pady=(6, 4))
         self.add_value_button = ttk.Button(value_actions, text="Add new", command=self.add_from_values)
@@ -751,15 +755,25 @@ class GeometryWindow:
         return "break"
 
     def snapshot(self):
-        return tuple(self.document.shapes)
+        return (tuple(self.document.shapes), str(self.design_path) if self.design_path else None)
+
+    def invalidate_preview(self):
+        preview = self.preview_window
+        self.preview_window = None
+        if preview is not None:
+            preview.close()
 
     def checkpoint(self):
+        self.invalidate_preview()
         self.undo_stack.append(self.snapshot())
         self.undo_stack = self.undo_stack[-100:]
         self.redo_stack.clear()
 
     def restore(self, snapshot, message):
-        self.document.shapes = list(snapshot)
+        self.invalidate_preview()
+        shapes, path = snapshot
+        self.document.shapes = list(shapes)
+        self.design_path = Path(path) if path else None
         self.set_selection(self.selection)
         if not self.selection and self.document.shapes:
             self.set_selection((min(self.selected or 0, len(self.document.shapes)-1),))
@@ -845,6 +859,9 @@ class GeometryWindow:
             data = json.loads(Path(path).read_text(encoding="utf-8"))
             if data.get("format") != "atomstack-design" or not isinstance(data.get("shapes"), list):
                 raise ValueError("This is not an Atomstack design file.")
+            version = data.get("version", 1)
+            if version not in (1, 2):
+                raise ValueError(f"Unsupported Atomstack design version: {version}.")
             shapes = [Shape(**item).validated() for item in data["shapes"]]
             self.checkpoint()
             self.document.shapes = shapes
@@ -865,7 +882,7 @@ class GeometryWindow:
                 return
             path = Path(chosen)
         try:
-            payload = {"format": "atomstack-design", "version": 1,
+            payload = {"format": "atomstack-design", "version": 2,
                        "bed": {"width": BED_X, "height": BED_Y},
                        "shapes": [shape.__dict__ for shape in self.document.shapes]}
             path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
@@ -1106,6 +1123,7 @@ class GeometryWindow:
 
     def open_preview(self):
         def open_window():
+            self.invalidate_preview()
             self.preview_window = JobPreviewWindow(self)
         self.act(open_window)
 
@@ -1190,6 +1208,20 @@ class GeometryWindow:
         self.mirror_y_button.configure(state="disabled" if multiple else "normal")
         self.add_value_button.configure(state="disabled" if multiple else "normal")
         self.apply_value_button.configure(text=f"Apply process to {len(indices)}" if multiple else "Apply values")
+        self.update_bounds_text(indices)
+
+    def update_bounds_text(self, indices=None):
+        indices = tuple(indices if indices is not None else self.selected_indices())
+        if not indices:
+            self.bounds_text.set("Bounds · no selection")
+            return
+        bounds = [shape_bounds(self.document.shapes[index]) for index in indices]
+        left = min(bound[0] for bound in bounds)
+        bottom = min(bound[1] for bound in bounds)
+        right = max(bound[2] for bound in bounds)
+        top = max(bound[3] for bound in bounds)
+        prefix = "Combined bounds" if len(indices) > 1 else "Transformed bounds"
+        self.bounds_text.set(f"{prefix} · L {left:g} · B {bottom:g} · R {right:g} · T {top:g}")
 
     def select(self, _event=None):
         selection = self.listbox.curselection()
@@ -1214,6 +1246,7 @@ class GeometryWindow:
         self.font_family.set(shape.font_family)
         self.mirror_x.set(shape.mirror_x)
         self.mirror_y.set(shape.mirror_y)
+        self.update_bounds_text()
 
     def transform(self):
         return fit_viewport(max(100, self.bed.winfo_width()), max(100, self.bed.winfo_height()),
@@ -1293,6 +1326,7 @@ class GeometryWindow:
 
     def begin_design_change(self):
         if self.interaction and not self.interaction.get("changed"):
+            self.invalidate_preview()
             self.undo_stack.append(self.interaction["snapshot"])
             self.undo_stack = self.undo_stack[-100:]
             self.redo_stack.clear()
@@ -1455,9 +1489,13 @@ class GeometryWindow:
                 self.bed.create_text((left+right)/2, (top+bottom)/2,
                                      text=shape.note.replace(" · ", "\n"), justify="center",
                                      fill="#20333d", font=("Segoe UI", 7))
-            if index == self.selected and len(selected_indices) == 1:
-                for hx, hy in ((left, bottom), (right, bottom), (left, top), (right, top)):
-                    self.bed.create_rectangle(hx-5, hy-5, hx+5, hy+5, fill="white", outline="#155eef", width=2)
+            if index == self.selected and len(selected_indices) == 1 and not shape.rotation % 360:
+                handle_left, handle_right = x0+shape.x*scale, x0+(shape.x+shape.width)*scale
+                handle_bottom, handle_top = y0-shape.y*scale, y0-(shape.y+shape.height)*scale
+                for hx, hy in ((handle_left, handle_bottom), (handle_right, handle_bottom),
+                               (handle_left, handle_top), (handle_right, handle_top)):
+                    self.bed.create_rectangle(hx-5, hy-5, hx+5, hy+5, fill="white", outline="#155eef", width=2,
+                                              tags=("resize-handle",))
         if len(selected_indices) > 1:
             shapes = [self.document.shapes[index] for index in selected_indices]
             bounds = [shape_bounds(shape) for shape in shapes]
@@ -1484,6 +1522,7 @@ class JobPreviewWindow:
         self.window.title("Job preview · no machine movement")
         self.window.geometry("1050x780")
         self.window.minsize(800, 600)
+        self.window.protocol("WM_DELETE_WINDOW", self.close)
         self.progress = tk.DoubleVar(value=100)
         self.playing = False
         outer = ttk.Frame(self.window, padding=20)
@@ -1515,6 +1554,13 @@ class JobPreviewWindow:
         ttk.Label(legend, text="Blue → red: increasing laser power", style="Quiet.TLabel").pack(side="left", padx=20)
         ttk.Label(legend, text="Estimate excludes controller and material delays", style="Quiet.TLabel").pack(side="right")
         self.progress.trace_add("write", lambda *_: self.draw())
+
+    def close(self):
+        self.playing = False
+        if self.editor.preview_window is self:
+            self.editor.preview_window = None
+        if self.window.winfo_exists():
+            self.window.destroy()
 
     @staticmethod
     def duration(seconds):

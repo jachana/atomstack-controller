@@ -9,8 +9,12 @@ Tk does not survive repeated create/destroy cycles inside one interpreter, so th
 whole class shares one root and one App, and setUp returns that App to a known
 state instead of rebuilding it. Skipped when Tk cannot open a display.
 """
+import json
+import tempfile
 import types
 import unittest
+from pathlib import Path
+from unittest import mock
 
 try:
     import tkinter as tk
@@ -56,9 +60,14 @@ class CanvasBehaviour(unittest.TestCase):
 
     def setUp(self):
         editor = self.app.geometry
+        editor.invalidate_preview()
         editor.document.shapes.clear()
         editor.selected = None
+        editor.selection.clear()
         editor.interaction = None
+        editor.undo_stack.clear()
+        editor.redo_stack.clear()
+        editor.design_path = None
         editor.view_zoom = 1.0
         editor.pan_x = editor.pan_y = 0.0
         self.app.pending_key_target = None
@@ -146,6 +155,101 @@ class CanvasBehaviour(unittest.TestCase):
         self.rectangle(10.0, 10.0, 40.0, 30.0)
         self.app.draw_bed()
         self.app.geometry.draw()
+
+    def test_rotated_selection_shows_exact_bounds_without_inactive_resize_handles(self):
+        editor = self.app.geometry
+        editor.document.shapes.append(Shape("rectangle", 10, 20, 40, 10, rotation=90))
+        editor.set_selection((0,), 0)
+        editor.refresh()
+        self.assertEqual(editor.bounds_text.get(), "Transformed bounds · L 25 · B 5 · R 35 · T 45")
+        self.assertEqual(editor.bed.find_withtag("resize-handle"), ())
+        editor.document.shapes[0] = Shape("rectangle", 10, 20, 40, 10)
+        editor.draw()
+        self.assertEqual(len(editor.bed.find_withtag("resize-handle")), 4)
+
+    def test_text_resize_handles_match_the_nominal_editable_box(self):
+        editor = self.app.geometry
+        text = Shape("text", 10, 20, 100, 30, text="I")
+        editor.document.shapes.append(text)
+        editor.set_selection((0,), 0)
+        editor.refresh()
+        view = editor.transform()
+        right_bottom = view.to_canvas(text.x + text.width, text.y)
+        self.assertEqual(editor.handle_at(fake_event(*right_bottom)), "BR")
+        handle_centres = []
+        for item in editor.bed.find_withtag("resize-handle"):
+            left, top, right, bottom = editor.bed.coords(item)
+            handle_centres.append(((left + right) / 2, (top + bottom) / 2))
+        self.assertTrue(any(abs(x-right_bottom[0]) < 0.01 and abs(y-right_bottom[1]) < 0.01
+                            for x, y in handle_centres))
+
+    def test_design_save_uses_v2_and_v1_files_load_with_transform_defaults(self):
+        editor = self.app.geometry
+        with tempfile.TemporaryDirectory() as folder:
+            save_path = Path(folder) / "current.atomdesign"
+            editor.document.shapes.append(Shape("rectangle", 10, 20, 40, 10, rotation=90, mirror_x=True))
+            editor.design_path = save_path
+            editor.save_design()
+            saved = json.loads(save_path.read_text(encoding="utf-8"))
+            self.assertEqual(saved["version"], 2)
+            self.assertEqual(saved["shapes"][0]["rotation"], 90)
+            self.assertTrue(saved["shapes"][0]["mirror_x"])
+
+            legacy_path = Path(folder) / "legacy.atomdesign"
+            legacy_path.write_text(json.dumps({
+                "format": "atomstack-design", "version": 1,
+                "shapes": [{"kind": "rectangle", "x": 1, "y": 2, "width": 3, "height": 4}],
+            }), encoding="utf-8")
+            with mock.patch("atomstack.ui.filedialog.askopenfilename", return_value=str(legacy_path)):
+                editor.open_design()
+            self.assertEqual(editor.design_path, legacy_path)
+            self.assertEqual(editor.document.shapes[0].rotation, 0)
+            self.assertFalse(editor.document.shapes[0].mirror_x)
+
+    def test_unsupported_project_does_not_change_document_path_or_history(self):
+        editor = self.app.geometry
+        editor.document.shapes.append(Shape("rectangle", 1, 2, 3, 4))
+        editor.design_path = Path("kept.atomdesign")
+        before = (tuple(editor.document.shapes), editor.design_path, len(editor.undo_stack))
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "future.atomdesign"
+            path.write_text(json.dumps({"format": "atomstack-design", "version": 99, "shapes": []}), encoding="utf-8")
+            with mock.patch("atomstack.ui.filedialog.askopenfilename", return_value=str(path)):
+                editor.open_design()
+        self.assertEqual((tuple(editor.document.shapes), editor.design_path, len(editor.undo_stack)), before)
+        self.assertIn("Unsupported Atomstack design version", editor.message.get())
+
+    def test_undo_after_open_restores_both_geometry_and_project_path(self):
+        editor = self.app.geometry
+        original = Shape("rectangle", 1, 2, 3, 4)
+        editor.document.shapes.append(original)
+        original_path = Path("original.atomdesign")
+        editor.design_path = original_path
+        with tempfile.TemporaryDirectory() as folder:
+            second_path = Path(folder) / "second.atomdesign"
+            second_path.write_text(json.dumps({
+                "format": "atomstack-design", "version": 2,
+                "shapes": [{"kind": "line", "x": 10, "y": 20, "width": 5, "height": 0}],
+            }), encoding="utf-8")
+            with mock.patch("atomstack.ui.filedialog.askopenfilename", return_value=str(second_path)):
+                editor.open_design()
+            self.assertEqual(editor.design_path, second_path)
+            editor.undo()
+        self.assertEqual(editor.document.shapes, [original])
+        self.assertEqual(editor.design_path, original_path)
+
+    def test_design_change_closes_an_open_job_preview(self):
+        editor = self.app.geometry
+        self.rectangle(10, 20, 40, 30)
+        editor.set_selection((0,), 0)
+        editor.open_preview()
+        self.root.update()
+        preview = editor.preview_window
+        self.assertIsNotNone(preview)
+        editor.transform_selection("rotate_right")
+        self.root.update()
+        self.assertIsNone(editor.preview_window)
+        self.assertFalse(preview.window.winfo_exists())
 
 
 if __name__ == "__main__":
