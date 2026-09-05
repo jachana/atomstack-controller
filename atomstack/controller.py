@@ -61,6 +61,7 @@ class Controller:
         self.settle_until = math.inf
         self.motion_deadline = math.inf
         self.last_poll = -math.inf
+        self.last_tick = None
         self.deferred_motion = None
         self.frame_waypoints = deque()
         self.frame_feed = None
@@ -498,6 +499,18 @@ class Controller:
                 # Explicitly disarm; verify via $G and FS, without changing firmware settings.
                 for cmd in ("$I", "?", "$$", "$#", "$G"):
                     self._enqueue(cmd, "init-modal" if cmd == "$G" else cmd)
+            # Every deadline below measures the machine. A modal dialog stops
+            # this loop for as long as the operator reads it, and time nobody
+            # spent watching is not evidence that the machine went silent.
+            gap = now - self.last_tick if self.last_tick is not None else 0.0
+            self.last_tick = now
+            stalled = gap > 0.5  # Longer than a poll cycle: ticking really stopped.
+            if stalled:
+                self.sent_at += gap
+                for name in ("motion_deadline", "settle_until"):
+                    deadline = getattr(self, name)
+                    if math.isfinite(deadline):
+                        setattr(self, name, deadline + gap)
             # A held machine stops acknowledging the move it did not finish, so
             # an operator pause must not be read as a silent controller.
             # resume_job() restarts both clocks.
@@ -508,7 +521,10 @@ class Controller:
                 if now > self.motion_deadline:
                     self.fault("Motion completion could not be verified.")
                     return
-            if self.origin is not None and self.phase in ("idle", "home-confirm") and now - self.status_at > 1.5:
+            # status_at is deliberately not shifted: the position really is old,
+            # so motion stays blocked until the next report arrives.
+            if (not stalled and self.origin is not None
+                    and self.phase in ("idle", "home-confirm") and now - self.status_at > 1.5):
                 self.fault("Position updates stopped; home reference discarded.")
                 return
             # V1.055 corrupts the next command when '?' overlaps a line command.

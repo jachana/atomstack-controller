@@ -232,8 +232,7 @@ class SessionTests(unittest.TestCase):
         self.c.jog("X", 1)
         self.pump(1)
         self.t.rx.clear()
-        self.clock.time += 6
-        self.c.tick()
+        self.pump(120)  # Six seconds of a running app: the machine, not the UI, went quiet.
         self.assertFalse(self.c.connected)
         self.assertIn(b"\x85", self.t.writes)
 
@@ -299,8 +298,7 @@ class SessionTests(unittest.TestCase):
         self.c.query("$I")
         self.pump(1)
         self.t.rx.clear()
-        self.clock.time += 6
-        self.c.tick()
+        self.pump(120)  # Six seconds of a running app: the machine, not the UI, went quiet.
         self.assertFalse(self.c.connected)
 
     def test_disconnect_and_reconnect_clear_home(self):
@@ -401,6 +399,20 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(self.c.phase, "idle", self.c.message)
         self.assertEqual(self.c.job_done, self.c.job_total)
         self.assertEqual(self.t.power, 0)
+
+    def test_a_blocking_dialog_does_not_discard_the_home_reference(self):
+        """Tk modals stop the tick loop; the machine did not stop reporting."""
+        self.home()
+        self.clock.time += 6  # The operator reads the "this will fire the laser" prompt.
+        self.c.tick()
+        self.assertTrue(self.c.connected, self.c.message)
+        self.assertEqual(self.c.home_state, "Confirmed")
+        with self.assertRaises(GuardError):
+            self.c.jog("X", 1)  # The position really is old, so motion waits.
+        self.pump(30)
+        self.c.jog("X", 1)
+        self.pump(60)
+        self.assertEqual(self.c.app_position, (1, 0))
 
     def test_a_slow_job_outlasts_the_planner_without_a_false_timeout(self):
         """A full planner delays an acknowledgement far past any fixed timeout."""
