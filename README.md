@@ -327,3 +327,18 @@ Projects use schema 4 and continue loading schema 1–3. Imported paths, fill se
 arrays, and layer edits participate in Undo/Redo and atomic project saves. SVG import
 is vector-outline import, not full browser rendering, and this release is not full
 LightBurn feature parity.
+
+## Beam alignment (0.14.1)
+
+The app uses the reported approximate cutting-beam offset of **12.5 mm left**
+of the positioning mark (X = -12.5 mm) when no saved alignment exists.
+Open **Beam alignment** to refine or disable it (0 mm). Settings are saved locally,
+not in project files or firmware. This value is an estimate, not a measured calibration.
+Jog, coordinates, and laser-off Frame refer to the positioning mark. For cutting,
+head X = design X - beam offset, so -12.5 shifts the head right by 12.5 mm.
+The design and preview remain in intended cut coordinates. Both head travel and
+cutting-beam endpoints are checked before sending; the last 12.5 mm of the right
+side is unreachable for cutting with this offset. Framing also checks cut reachability.
+Offsets cannot change during motion or a queued motion request. Invalid saved
+alignment blocks sending until a valid value is saved. Tests use the simulator;
+physical alignment still needs verification on the machine.

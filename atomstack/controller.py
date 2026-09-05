@@ -31,6 +31,8 @@ class Controller:
     def __init__(self, clock=time.monotonic):
         self.clock = clock
         self.transport = None
+        self.alignment_valid = True
+        self.beam_offset_x = 0.0  # Cutting beam minus positioning mark, millimetres.
         self.log = deque(maxlen=800)
         self.rx_count = 0
         self.tx_count = 0
@@ -359,7 +361,28 @@ class Controller:
         self._enqueue(f"$J=G21 G90 G53 X{self.target[0]:.3f} Y{self.target[1]:.3f} F{self.frame_feed}", "frame")
         self.message = f"Framing with laser off · {len(self.frame_waypoints) + 1} points remaining."
 
+    def set_beam_offset(self, value):
+        if self.phase not in ("disconnected", "idle") or self.deferred_motion:
+            raise GuardError("Stop motion before changing beam alignment.")
+        value = float(value)
+        if not math.isfinite(value) or abs(value) > 50:
+            raise GuardError("Beam offset must be a finite value between -50 and 50 mm.")
+        self.beam_offset_x = value
+
+    def prepare_job(self, document):
+        """Design positions refer to the positioning mark; cut head = design - offset."""
+        self._guard(require_home=True, allow_status_poll=True, allow_stale=True)
+        if not self.alignment_valid:
+            raise GuardError("Open Beam alignment and save a valid offset before sending a job.")
+        code = document.gcode((self.origin[0] - self.beam_offset_x, self.origin[1]))
+        for line in code.splitlines():
+            if line and not line.startswith(";"):
+                self._validate_job_command(line)
+        return code
+
     def run_job(self, lines):
+        if not self.alignment_valid:
+            raise GuardError("Saved beam alignment could not be read. Open Beam alignment and save a valid offset.")
         lines = tuple(lines)
         # Validating the job against a slightly old position is fine: if it has
         # to wait for a fresh report, the whole request runs again on arrival.
@@ -411,7 +434,10 @@ class Controller:
         machine = (float(move[2]), float(move[3]))
         app = (machine[0] - self.origin[0], machine[1] - self.origin[1])
         if not self._inside(app):
-            raise GuardError("Generated job contains a move outside the app bounds.")
+            raise GuardError("Generated job exceeds head travel after beam alignment. Move the design inward.")
+        beam = (app[0] + self.beam_offset_x, app[1])
+        if not self._inside(beam):
+            raise GuardError("Generated job puts the cutting beam outside the bed after alignment.")
         if move[1] == "1" and (not move[4] or not 60 <= int(move[4]) <= self.max_xy_feed):
             raise GuardError("Generated job feed exceeds the live machine limit.")
         feed = int(move[4]) if move[4] else self.max_xy_feed

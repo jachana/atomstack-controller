@@ -49,6 +49,14 @@ class App:
     def __init__(self, root, demo=False, port=None, report=None):
         self.root = root
         self.controller = Controller()
+        self.alignment_path = ProjectStore().directory / "beam-alignment.json"
+        self.alignment_error = None
+        try:
+            offset = json.loads(self.alignment_path.read_text(encoding="utf-8"))["offset_x"] if self.alignment_path.exists() else -12.5
+            self.controller.set_beam_offset(offset)
+        except (OSError, ValueError, KeyError, TypeError, GuardError) as exc:
+            self.alignment_error = str(exc)
+        self.controller.alignment_valid = self.alignment_error is None
         self.reporter = Reporter(report)
         self.active_port = None
         self.root.title(f"Atomstack — Personal controller {__version__}")
@@ -99,6 +107,7 @@ class App:
         header = ttk.Frame(outer)
         header.pack(fill="x")
         ttk.Label(header, text="Atomstack", style="Title.TLabel").pack(side="left")
+        ttk.Button(header, text="Beam alignment", command=self.open_alignment).pack(side="left", padx=8)
         ttk.Label(header, textvariable=self.mode, style="Quiet.TLabel").pack(side="left", padx=20)
         ttk.Button(header, text="STOP / RESET", style="Stop.TButton", command=self.stop).pack(side="right", padx=(14, 0))
         ttk.Label(header, textvariable=self.status_text, style="Section.TLabel").pack(side="right")
@@ -243,6 +252,34 @@ class App:
 
     def selected_feed(self):
         return int(self.jog_feed.get().rsplit("·", 1)[-1].strip())
+
+    def open_alignment(self):
+        window = tk.Toplevel(self.root)
+        window.title("Beam alignment")
+        window.transient(self.root)
+        panel = ttk.Frame(window, padding=22)
+        panel.pack(fill="both", expand=True)
+        ttk.Label(panel, text="Positioning mark → cutting beam", style="Section.TLabel").pack(anchor="w")
+        ttk.Label(panel, text="Your estimate: cutting beam 12.5 mm LEFT of the mark.\nNegative = left · positive = right · 0 = no correction.\nJog and Frame follow the positioning mark.\nCutting shifts the head in the opposite direction.\nDesign coordinates stay unchanged.", wraplength=440).pack(anchor="w", pady=12)
+        value = tk.StringVar(value=str(self.controller.beam_offset_x))
+        ttk.Label(panel, text="Cutting beam X offset · mm").pack(anchor="w")
+        ttk.Entry(panel, textvariable=value, width=16).pack(anchor="w", pady=6)
+        feedback = tk.StringVar(value="12.5 mm is an estimate; refine it from your alignment measurement.")
+        ttk.Label(panel, textvariable=feedback, wraplength=440).pack(anchor="w", pady=8)
+        def save():
+            previous = self.controller.beam_offset_x
+            try:
+                self.controller.set_beam_offset(float(value.get()))
+                atomic_json(self.alignment_path, {"offset_x": self.controller.beam_offset_x})
+            except (ValueError, OSError, GuardError) as exc:
+                self.controller.beam_offset_x = previous
+                feedback.set(str(exc))
+                return
+            self.alignment_error = None
+            self.controller.alignment_valid = True
+            feedback.set(f"Saved. Head compensation X {-self.controller.beam_offset_x:+g} mm during cutting.")
+        ttk.Button(panel, text="Save alignment", command=save).pack(anchor="e", pady=(8, 0))
+        return window
 
     def toggle_details(self):
         if self.technical.get():
@@ -1373,11 +1410,11 @@ class GeometryWindow:
         def send():
             if self.controller.origin is None:
                 raise GuardError("Home and confirm bottom-left before sending a job.")
-            code = self.document.gcode(self.controller.origin)
+            code = self.controller.prepare_job(self.document)
             output = self.document.output_shapes()
             highest = max(shape.power for _, shape in output)
             if not messagebox.askokcancel("Send job to Atomstack",
-                    f"This will fire the laser and run {len(output)} geometry item(s).\n\nMaximum power: S{highest}\n\nConfirm the material is secured, ventilation is on, and you are watching the machine.",
+                    f"This will fire the laser and run {len(output)} geometry item(s).\n\nMaximum power: S{highest}\nBeam offset X: {self.controller.beam_offset_x:+g} mm (cut minus mark)\n\nConfirm the material is secured, ventilation is on, and you are watching the machine.",
                     parent=self.window):
                 return
             self.controller.run_job(code.splitlines())
@@ -1386,6 +1423,7 @@ class GeometryWindow:
 
     def frame(self):
         def start():
+            self.controller.prepare_job(self.document)  # Check compensated cut travel before framing.
             points = self.document.frame_points()
             self.controller.frame(points, int(self.frame_speed.get()))
             self.message.set("Frame started. The laser remains off; watch the head trace the outline.")
@@ -1409,7 +1447,7 @@ class GeometryWindow:
         self.send_button.configure(state="normal" if ready and has_output else "disabled")
         self.pause_button.configure(state="normal" if job_running and not self.controller.job_paused else "disabled")
         self.resume_button.configure(state="normal" if job_running and self.controller.job_paused else "disabled")
-        self.frame_status.set(self.controller.message if job_running else reason)
+        self.frame_status.set((self.controller.message if job_running else reason) + f" · Cut beam X {self.controller.beam_offset_x:+g} mm from mark")
 
     def refresh(self, message=None):
         self.listbox.delete(0, "end")
