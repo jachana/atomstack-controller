@@ -32,6 +32,7 @@ class Controller:
         self.clock = clock
         self.transport = None
         self.alignment_valid = True
+        self.auto_home = True  # Home on connect, and trust the cycle's own endpoint.
         self.beam_offset_x = 0.0  # Cutting beam minus positioning mark, millimetres.
         self.log = deque(maxlen=800)
         self.rx_count = 0
@@ -65,6 +66,7 @@ class Controller:
         self.last_poll = -math.inf
         self.last_tick = None
         self.deferred_motion = None
+        self.home_pending = False
         self.frame_waypoints = deque()
         self.frame_feed = None
         self.job_commands = deque()
@@ -568,6 +570,12 @@ class Controller:
             # V1.055 corrupts the next command when '?' overlaps a line command.
             # Serialize bare status queries too, completing them on '<...>'.
             # No empty G-code lines or extra acknowledgements are generated.
+            if self.home_pending and self.phase == "idle" and not self.deferred_motion:
+                try:
+                    self.home()
+                    self.home_pending = False
+                except GuardError:
+                    pass  # Not settled yet; the next tick tries again.
             if not self.pending and not self.queue and now - self.last_poll >= 0.4:
                 self._enqueue("?", "status")
             if not self.pending and self.queue:
@@ -651,11 +659,19 @@ class Controller:
                 self.message = "Unexpected active laser report. Stop requested; check the machine."
                 return
             if self.phase == "home-status" and report.state == "Idle" and report.machine is not None:
-                self.phase = "home-confirm"
-                self.home_state = "Awaiting confirmation"
                 self.last_position = report.machine
                 self.motion_deadline = math.inf
-                self.message = "Home completed. Confirm the head is physically at bottom-left."
+                if self.auto_home:
+                    # The cycle ended on the limit switches, so the machine has
+                    # just told us where bottom-left is; asking adds nothing.
+                    self.origin = report.machine
+                    self.home_state = "Confirmed"
+                    self.phase = "idle"
+                    self.message = "Homed. Bottom-left is app (0, 0)."
+                else:
+                    self.phase = "home-confirm"
+                    self.home_state = "Awaiting confirmation"
+                    self.message = "Home completed. Confirm the head is physically at bottom-left."
             elif self.phase == "home-confirm" and (report.state != "Idle" or not self._near(report.machine, self.last_position)):
                 self.fault("Position changed before home confirmation.")
                 return
@@ -733,5 +749,11 @@ class Controller:
     def _finish_initialization(self):
         self.ready = self.profile_ok and self.laser_off and self.firmware != "Not read"
         self.phase = "idle"
-        self.message = ("Connected. Diagnostics verified. Home the machine before motion."
-                        if self.ready else "Diagnostics incomplete or profile mismatch. Motion locked; inspect the log.")
+        if self.ready and self.auto_home:
+            # tick() issues it once the guards are satisfied, so the same
+            # profile, laser and fresh-position checks still apply.
+            self.home_pending = True
+            self.message = "Connected. Diagnostics verified. Homing."
+        else:
+            self.message = ("Connected. Diagnostics verified. Home the machine before motion."
+                            if self.ready else "Diagnostics incomplete or profile mismatch. Motion locked; inspect the log.")

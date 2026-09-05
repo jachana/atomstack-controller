@@ -29,19 +29,81 @@ class SessionTests(unittest.TestCase):
             self.clock.time += 0.05
             self.c.tick()
 
+    def manual_session(self):
+        """Reconnect with automatic homing off.
+
+        Auto homing is the product default, but the confirmation path is still
+        supported and these tests are what pin its contract.
+        """
+        self.c = Controller(self.clock)
+        self.c.auto_home = False
+        self.t = Simulator(self.clock)
+        self.c.attach(self.t, settle=0)
+        self.pump(60)
+        self.assertTrue(self.c.ready, self.c.message)
+
     def home(self):
+        """Reach a confirmed home, under either homing policy.
+
+        With auto_home the connect sequence has usually done it already; the
+        manual path still needs its explicit cycle and confirmation.
+        """
         self.c.set_physical_laser_off(True)
-        self.c.home()
-        self.pump()
-        self.assertEqual(self.c.phase, "home-confirm", self.c.message)
-        self.c.confirm_home()
+        if self.c.home_state != "Confirmed":
+            self.c.home()
+            self.pump()
+            if self.c.phase == "home-confirm":
+                self.c.confirm_home()
+        self.assertEqual(self.c.home_state, "Confirmed", self.c.message)
         # A status transaction can be awaiting its own ACK at this instant.
         for _ in range(4):
             if self.c.pending is None and not self.c.queue:
                 break
             self.pump(1)
 
+    def test_connecting_homes_without_being_asked_and_needs_no_confirmation(self):
+        # setUp only connects; homing is the connect sequence's own doing.
+        self.assertEqual(self.c.home_state, "Confirmed", self.c.message)
+        self.assertEqual(self.c.origin, tuple(self.t.home))
+        self.assertEqual(self.c.phase, "idle")
+        self.assertIn(b"$H" + bytes([10]), self.t.writes)
+        self.assertEqual(self.c.app_position, (0, 0))
+        # Motion is available immediately, with no confirmation step.
+        self.c.jog("X", 1)
+        self.assertEqual(self.c.phase, "jog-command")
+
+    def test_automatic_homing_still_waits_for_the_diagnostics_it_depends_on(self):
+        clock = Clock()
+
+        class WrongProfile(Simulator):
+            """Reports travel the app has not verified, so it never gets ready."""
+            def __init__(self, clock):
+                super().__init__(clock)
+                self.fixture = self.fixture.replace("$130=365.000", "$130=999.000")
+
+        transport = WrongProfile(clock)
+        controller = Controller(clock)
+        controller.attach(transport, settle=0)
+        for _ in range(60):
+            clock.time += 0.05
+            controller.tick()
+        self.assertFalse(controller.ready)
+        self.assertNotIn(b"$H" + bytes([10]), transport.writes)
+        self.assertIsNone(controller.origin)
+
+    def test_homing_stays_manual_when_the_session_asks_for_confirmation(self):
+        self.manual_session()
+        self.assertEqual(self.c.home_state, "Not homed")
+        self.assertNotIn(b"$H" + bytes([10]), self.t.writes)
+        self.c.home()
+        self.pump()
+        self.assertEqual(self.c.phase, "home-confirm")
+        self.assertIsNone(self.c.origin)
+        self.c.confirm_home()
+        self.assertEqual(self.c.origin, tuple(self.t.home))
+
     def test_diagnostics_and_observed_profile(self):
+        self.manual_session()
         self.assertEqual(self.c.firmware, "V1.055.Oct 13 2023")
         self.assertEqual({k: self.c.settings[k] for k in EXPECTED}, EXPECTED)
         self.assertIn("G54", self.c.parameters)
@@ -68,6 +130,7 @@ class SessionTests(unittest.TestCase):
         self.assertIn("no line command pending", self.c.message)
 
     def test_home_not_inferred_from_fixture_or_idle(self):
+        self.manual_session()
         self.assertIsNone(self.c.origin)
         with self.assertRaises(GuardError):
             self.c.jog("X", 1)
@@ -75,11 +138,13 @@ class SessionTests(unittest.TestCase):
             self.c.confirm_home()
 
     def test_physical_disconnect_is_not_required(self):
+        self.manual_session()
         self.c.home()
         self.pump()
         self.assertEqual(self.c.phase, "home-confirm")
 
     def test_home_ack_is_not_confirmation(self):
+        self.manual_session()
         self.c.set_physical_laser_off(True)
         self.c.home()
         self.pump()
@@ -88,6 +153,7 @@ class SessionTests(unittest.TestCase):
             self.c.jog("X", 1)
 
     def test_captures_actual_home_not_hardcoded_sample(self):
+        self.manual_session()
         self.c.set_physical_laser_off(True)
         self.c.home()
         self.pump()
@@ -256,6 +322,7 @@ class SessionTests(unittest.TestCase):
         self.assertFalse(any(b"M3" in x or b"M4" in x or b" S" in x for x in frame_writes))
 
     def test_frame_requires_home_profile_power_and_bounds(self):
+        self.manual_session()
         points = ((0, 0), (1, 1))
         self.c.set_physical_laser_off(True)
         with self.assertRaises(GuardError):
@@ -308,6 +375,7 @@ class SessionTests(unittest.TestCase):
         self.assertFalse(self.c.connected)
 
     def test_disconnect_and_reconnect_clear_home(self):
+        self.manual_session()
         self.home()
         self.c.disconnect()
         self.c.attach(Simulator(self.clock), settle=0)
@@ -515,6 +583,7 @@ class SessionTests(unittest.TestCase):
         self.assertFalse(self.c.connected)
 
     def test_initial_alarm_diagnostics_skip_blocked_gcode(self):
+        self.manual_session()
         class AlarmSimulator(Simulator):
             def write(self, data):
                 super().write(data)
@@ -611,6 +680,7 @@ class SessionTests(unittest.TestCase):
                 self.c.query(command)
 
     def test_home_locked_alarm_can_home_without_unlock(self):
+        self.manual_session()
         self.c.status = parse_status("<Alarm|MPos:-288,-301,0|FS:0,0>")
         self.c.set_physical_laser_off(True)
         self.c.home()

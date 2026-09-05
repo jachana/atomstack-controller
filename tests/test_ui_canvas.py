@@ -134,13 +134,18 @@ class CanvasBehaviour(unittest.TestCase):
         self.assertEqual(anchor_point(bounds, "TR"), (150.0, 100.0))
         self.assertEqual(anchor_point(bounds, "C"), (100.0, 70.0))
 
-    def test_object_jog_is_refused_before_a_confirmed_home(self):
+    def test_object_jog_is_refused_without_a_confirmed_home(self):
+        """Connecting now homes, so this is the state a fault or reset leaves."""
         self.rectangle()
         self.app.machine_object.set(self.app.machine_object_box.cget("values")[0])
-        self.app.controller.message = ""
+        controller = self.app.controller
+        controller.origin = None
+        controller.home_state = "Not homed"
+        controller.target = None
+        controller.message = ""
         self.app.jog_object("TR")
-        self.assertNotEqual(self.app.controller.message, "")
-        self.assertIsNone(self.app.controller.target)
+        self.assertNotEqual(controller.message, "")
+        self.assertIsNone(controller.target)
 
     def test_object_jog_without_a_selection_asks_for_one(self):
         self.app.jog_object("TR")

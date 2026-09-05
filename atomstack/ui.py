@@ -169,7 +169,10 @@ class App:
         self.home_btn = ttk.Button(home_row, text="Home machine", command=self.home)
         self.home_btn.pack(side="left")
         self.confirm_btn = ttk.Button(home_row, text="Confirm bottom-left", command=lambda: self.act(self.controller.confirm_home))
-        self.confirm_btn.pack(side="left", padx=6)
+        # Connecting homes and takes its own endpoint as bottom-left, so the
+        # confirmation only appears for a session that asks to do it by hand.
+        if not self.controller.auto_home:
+            self.confirm_btn.pack(side="left", padx=6)
         ttk.Label(right, text="Jog controls", style="Section.TLabel").pack(anchor="w", pady=(18, 8))
         presets = ttk.Frame(right)
         presets.pack(fill="x", pady=(0, 8))
@@ -766,7 +769,9 @@ class GeometryWindow:
         self.move_position = tk.StringVar(value="Home required")
         ttk.Label(move_body, textvariable=self.move_position, style="Section.TLabel").pack(anchor="w", pady=6)
         ttk.Button(move_body, text="Home machine", command=lambda: self.act(self.controller.home)).pack(fill="x", pady=3)
-        ttk.Button(move_body, text="Confirm bottom-left", command=lambda: self.act(self.controller.confirm_home)).pack(fill="x", pady=3)
+        if not self.controller.auto_home:
+            ttk.Button(move_body, text="Confirm bottom-left",
+                       command=lambda: self.act(self.controller.confirm_home)).pack(fill="x", pady=3)
         self.dock_step = tk.StringVar(value="1")
         self.dock_feed = tk.StringVar(value="3000")
         for label, variable, values in (("Step · mm", self.dock_step, ("0.1", "1", "5", "10")), ("Speed · mm/min", self.dock_feed, tuple(map(str, JOG_FEEDS)))):

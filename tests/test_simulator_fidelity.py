@@ -141,9 +141,11 @@ class ControllerRefusesWhatTheMachineWouldAllow(unittest.TestCase):
         self.controller.attach(self.sim, settle=0)
         self.pump(60)
         self.assertTrue(self.controller.ready, self.controller.message)
-        self.controller.home()
-        self.pump()
-        self.controller.confirm_home()
+        if self.controller.home_state != "Confirmed":
+            self.controller.home()
+            self.pump()
+            if self.controller.phase == "home-confirm":
+                self.controller.confirm_home()
         for _ in range(4):
             if self.controller.pending is None and not self.controller.queue:
                 break

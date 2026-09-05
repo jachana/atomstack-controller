@@ -100,11 +100,13 @@ class BoundsOnAConnectedSession(unittest.TestCase):
         self.assertEqual(self.controller.travel, (365.0, 305.0))
 
     def test_the_refusal_message_uses_the_machines_numbers(self):
-        self.controller.home()
-        for _ in range(30):
-            self.clock.time += 0.05
-            self.controller.tick()
-        self.controller.confirm_home()
+        if self.controller.home_state != "Confirmed":
+            self.controller.home()
+            for _ in range(30):
+                self.clock.time += 0.05
+                self.controller.tick()
+            if self.controller.phase == "home-confirm":
+                self.controller.confirm_home()
         for _ in range(4):
             if self.controller.pending is None and not self.controller.queue:
                 break
