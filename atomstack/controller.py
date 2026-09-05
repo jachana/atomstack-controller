@@ -402,8 +402,21 @@ class Controller:
         if move[1] == "1" and (not move[4] or not 60 <= int(move[4]) <= self.max_xy_feed):
             raise GuardError("Generated job feed exceeds the live machine limit.")
         feed = int(move[4]) if move[4] else self.max_xy_feed
-        seconds = math.dist(position, machine) / feed * 60 if position and feed else 0.0
-        return machine, seconds
+        return machine, self._move_seconds(math.dist(position, machine), feed) if position else 0.0
+
+    def _move_seconds(self, distance, feed):
+        """An upper bound on one block: full speed, plus one accelerate and stop.
+
+        GRBL carries speed across a corner, so a job of short segments takes
+        less than this. A watchdog wants the pessimistic number: a job that
+        finishes early is not a fault, and one cut short mid-burn is.
+        """
+        if not feed:
+            return 0.0
+        speed = feed / 60.0
+        acceleration = min(self.settings.get(120, 0) or math.inf,
+                           self.settings.get(121, 0) or math.inf)
+        return distance / speed + (speed / acceleration if math.isfinite(acceleration) else 0.0)
 
     def _start_job_command(self):
         if self.job_paused:

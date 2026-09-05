@@ -127,8 +127,15 @@ class Simulator:
             self.rx.append(self.admit(x, y, feed).encode())
 
     def admit(self, x, y, feed):
-        """Queue one block and acknowledge it, the way GRBL's parser does."""
-        seconds = math.dist(self.position, (x, y)) / (max(feed, 1.0) / 60.0)
+        """Queue one block and acknowledge it, the way GRBL's parser does.
+
+        A block costs its distance at feed plus the time to reach that feed
+        from a standstill, so a job of many short segments takes noticeably
+        longer than its distance alone suggests.
+        """
+        speed = max(feed, 1.0) / 60.0
+        acceleration = min(self.settings.get(120, 1000.0), self.settings.get(121, 1000.0))
+        seconds = math.dist(self.position, (x, y)) / speed + speed / max(acceleration, 1.0)
         start = max(self.blocks[-1] if self.blocks else 0.0, self.machine_now())
         self.blocks.append(start + seconds)
         self.position = [x, y]

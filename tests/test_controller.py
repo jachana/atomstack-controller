@@ -424,6 +424,27 @@ class SessionTests(unittest.TestCase):
         # ten seconds a fixed per-command timeout used to allow.
         self.assertGreater(self.clock.time, 20 * 20)
 
+    def test_a_dense_job_survives_the_time_lost_to_acceleration(self):
+        """Thousands of short segments cost far more than their distance."""
+        self.home()
+        ox, oy = self.c.origin
+        lines = ["G21", "G90", "M5", "S0", f"G53 G0 X{ox + 10:.3f} Y{oy + 10:.3f}", "M4 S200"]
+        for index in range(2500):  # 0.1 mm hops: almost all of the time is ramping.
+            lines.append(f"G53 G1 X{ox + 10 + index * 0.1:.3f} Y{oy + 10:.3f} F6000")
+        lines += ["M5", "S0"]
+        self.c.run_job(lines)
+        for _ in range(400000):
+            self.pump(1)
+            if self.c.phase == "idle" or not self.c.connected:
+                break
+        self.assertTrue(self.c.connected, self.c.message)
+        self.assertEqual(self.c.phase, "idle", self.c.message)
+        self.assertEqual(self.c.job_done, self.c.job_total)
+        # 250 mm at 6000 mm/min is 2.5 s of travel; getting up to speed 2500
+        # times costs two orders of magnitude more, and a job deadline built
+        # from distance alone expires long before the machine is late.
+        self.assertGreater(self.clock.time, 200)
+
     def test_job_stops_on_excess_reported_power_or_wrong_final_position(self):
         self.home()
         self.c.phase = "job-command"
