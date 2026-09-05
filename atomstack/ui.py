@@ -622,8 +622,10 @@ class GeometryWindow:
         self.frame_button.pack(side="right", padx=8)
         self.preview_button = ttk.Button(action_bar, text="Preview job", command=self.open_preview)
         self.preview_button.pack(side="right", padx=(0, 4))
-        ttk.Label(action_bar, text="Frame speed").pack(side="right", padx=(8, 3))
+        # Packed right to left, so the value has to be packed before its label
+        # for the bar to read "Frame speed [6000]".
         ttk.Combobox(action_bar, textvariable=self.frame_speed, values=tuple(map(str, JOG_FEEDS)), state="readonly", width=7).pack(side="right")
+        ttk.Label(action_bar, text="Frame speed").pack(side="right", padx=(8, 3))
         library_bar = ttk.Frame(outer)
         library_bar.pack(fill="x", pady=(0, 12))
         ttk.Label(library_bar, text="Material library").pack(side="left", padx=(0, 5))
