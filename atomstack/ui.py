@@ -885,7 +885,11 @@ class GeometryWindow:
             payload = {"format": "atomstack-design", "version": 2,
                        "bed": {"width": BED_X, "height": BED_Y},
                        "shapes": [shape.__dict__ for shape in self.document.shapes]}
-            path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            # Write beside the design and rename over it, the way the material
+            # library does: an interrupted save must not truncate the old file.
+            temporary = path.with_suffix(path.suffix + ".tmp")
+            temporary.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            temporary.replace(path)
             self.design_path = path
             self.message.set(f"Saved {path.name}.")
         except OSError as exc:

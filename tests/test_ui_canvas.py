@@ -194,6 +194,9 @@ class CanvasBehaviour(unittest.TestCase):
             self.assertEqual(saved["version"], 2)
             self.assertEqual(saved["shapes"][0]["rotation"], 90)
             self.assertTrue(saved["shapes"][0]["mirror_x"])
+            self.assertEqual(list(Path(folder).glob("*.tmp")), [],
+                             "the temporary used for the atomic save must not be left behind")
+
 
             legacy_path = Path(folder) / "legacy.atomdesign"
             legacy_path.write_text(json.dumps({
