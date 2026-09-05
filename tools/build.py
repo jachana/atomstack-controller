@@ -84,8 +84,18 @@ def main():
 
     versioned = ROOT / f"{name}.exe"
     current = ROOT / "AtomstackController.exe"
-    shutil.copy2(built, versioned)
-    shutil.copy2(built, current)
+    for destination in (versioned, current):
+        try:
+            shutil.copy2(built, destination)
+        except PermissionError:
+            print()
+            print(f"Cannot overwrite {destination.name}: it is open in another process.")
+            print("Close the running controller, then re-run this script. The fresh")
+            print(f"binary is already at {built.relative_to(ROOT)} if you need it now.")
+            print()
+            print("Find the process with:")
+            print('  Get-Process AtomstackController | Select-Object Id, Path')
+            return 1
 
     digest = sha256(versioned)
     print()
