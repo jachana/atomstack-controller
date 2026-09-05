@@ -549,6 +549,7 @@ class GeometryWindow:
         self.grid_size = tk.StringVar(value="1 mm")
         self.design_path = None
         self.preview_window = None
+        self.layer_window = None
         self.fields = {name: tk.StringVar(value=value) for name, value in {
             "x": "10", "y": "10", "width": "40", "height": "30",
             "speed": "1000", "power": "300", "passes": "1", "text": "ATOMSTACK", "rotation": "0"}.items()}
@@ -606,8 +607,9 @@ class GeometryWindow:
         layer_menu = tk.Menu(self.window, tearoff=False)
         layer_menu.add_command(label="Bring forward", command=lambda: self.reorder(1))
         layer_menu.add_command(label="Send backward", command=lambda: self.reorder(-1))
-        layer_button = ttk.Menubutton(view_bar, text="Layer", menu=layer_menu)
+        layer_button = ttk.Menubutton(view_bar, text="Stack order", menu=layer_menu)
         layer_button.pack(side="left", padx=3)
+        ttk.Button(view_bar, text="Cut layers…", command=self.open_layers).pack(side="left", padx=3)
         ttk.Label(view_bar, text="Wheel: zoom  ·  middle-drag: pan  ·  arrows: nudge", style="Quiet.TLabel").pack(side="left", padx=8)
         action_bar = ttk.Frame(outer)
         action_bar.pack(fill="x", pady=(0, 10))
@@ -757,7 +759,7 @@ class GeometryWindow:
         return "break"
 
     def snapshot(self):
-        return (tuple(self.document.shapes), str(self.design_path) if self.design_path else None)
+        return (tuple(self.document.shapes), str(self.design_path) if self.design_path else None, tuple(self.document.layers))
 
     def invalidate_preview(self):
         preview = self.preview_window
@@ -773,7 +775,8 @@ class GeometryWindow:
 
     def restore(self, snapshot, message):
         self.invalidate_preview()
-        shapes, path = snapshot
+        shapes, path, layers = snapshot
+        self.document.layers = list(layers)
         self.document.shapes = list(shapes)
         self.design_path = Path(path) if path else None
         self.set_selection(self.selection)
@@ -847,6 +850,7 @@ class GeometryWindow:
             return
         self.checkpoint()
         self.document.shapes = []
+        self.document.layers = []
         self.set_selection(())
         self.design_path = None
         self.fit_view()
@@ -859,14 +863,11 @@ class GeometryWindow:
             return
         try:
             data = json.loads(Path(path).read_text(encoding="utf-8"))
-            if data.get("format") != "atomstack-design" or not isinstance(data.get("shapes"), list):
-                raise ValueError("This is not an Atomstack design file.")
-            version = data.get("version", 1)
-            if version not in (1, 2):
-                raise ValueError(f"Unsupported Atomstack design version: {version}.")
-            shapes = [Shape(**item).validated() for item in data["shapes"]]
+            loaded = Document.from_payload(data)
+            shapes = loaded.shapes
             self.checkpoint()
             self.document.shapes = shapes
+            self.document.layers = loaded.layers
             self.set_selection((0,) if shapes else ())
             self.design_path = Path(path)
             self.fit_view()
@@ -884,9 +885,7 @@ class GeometryWindow:
                 return
             path = Path(chosen)
         try:
-            payload = {"format": "atomstack-design", "version": 2,
-                       "bed": {"width": BED_X, "height": BED_Y},
-                       "shapes": [shape.__dict__ for shape in self.document.shapes]}
+            payload = self.document.to_payload()
             # Write beside the design and rename over it, the way the material
             # library does: an interrupted save must not truncate the old file.
             temporary = path.with_suffix(path.suffix + ".tmp")
@@ -917,6 +916,11 @@ class GeometryWindow:
             if self.selected is None:
                 raise ValueError("Select a shape first.")
             candidate = self.values().validated()
+            if any(self.document.shapes[i].layer for i in self.selected_indices()):
+                current = self.document.shapes[self.selected]
+                candidate = Shape(**{**candidate.__dict__, "speed": current.speed, "power": current.power, "passes": current.passes, "layer": current.layer})
+                if len(self.selected_indices()) > 1:
+                    raise ValueError("Use Cut layers to change shared process settings.")
             self.checkpoint()
             indices = self.selected_indices()
             if len(indices) > 1:
@@ -1124,6 +1128,13 @@ class GeometryWindow:
             self.message.set(f"Deleted material preset: {name}.")
         self.act(delete)
 
+    def open_layers(self):
+        from .layer_ui import LayerWindow
+        if self.layer_window is not None and self.layer_window.window.winfo_exists():
+            self.layer_window.window.lift()
+        else:
+            self.layer_window = LayerWindow(self)
+
     def open_burn_test(self):
         BurnTestWindow(self)
 
@@ -1149,9 +1160,10 @@ class GeometryWindow:
             if self.controller.origin is None:
                 raise GuardError("Home and confirm bottom-left before sending a job.")
             code = self.document.gcode(self.controller.origin)
-            highest = max(shape.power for shape in self.document.shapes)
+            output = self.document.output_shapes()
+            highest = max(shape.power for _, shape in output)
             if not messagebox.askokcancel("Send job to Atomstack",
-                    f"This will fire the laser and run {len(self.document.shapes)} geometry item(s).\n\nMaximum power: S{highest}\n\nConfirm the material is secured, ventilation is on, and you are watching the machine.",
+                    f"This will fire the laser and run {len(output)} geometry item(s).\n\nMaximum power: S{highest}\n\nConfirm the material is secured, ventilation is on, and you are watching the machine.",
                     parent=self.window):
                 return
             self.controller.run_job(code.splitlines())
@@ -1172,14 +1184,15 @@ class GeometryWindow:
         self.window.after(250, self.refresh_frame_controls)
 
     def update_frame_controls(self):
-        if not self.document.shapes:
-            ready, reason = False, "Add geometry to enable Frame."
+        has_output = bool(self.document.output_shapes())
+        if not has_output:
+            ready, reason = False, "Enable layer output or add geometry to enable Frame."
         else:
             ready, reason = self.controller.frame_readiness()
         self.frame_button.configure(state="normal" if ready else "disabled")
-        self.preview_button.configure(state="normal" if self.document.shapes else "disabled")
+        self.preview_button.configure(state="normal" if has_output else "disabled")
         job_running = self.controller.phase.startswith("job")
-        self.send_button.configure(state="normal" if ready and self.document.shapes else "disabled")
+        self.send_button.configure(state="normal" if ready and has_output else "disabled")
         self.pause_button.configure(state="normal" if job_running and not self.controller.job_paused else "disabled")
         self.resume_button.configure(state="normal" if job_running and self.controller.job_paused else "disabled")
         self.frame_status.set(self.controller.message if job_running else reason)
@@ -1187,7 +1200,9 @@ class GeometryWindow:
     def refresh(self, message=None):
         self.listbox.delete(0, "end")
         for shape in self.document.shapes:
-            self.listbox.insert("end", shape.label)
+            layer = next((l for l in self.document.layers if l.name == shape.layer), None)
+            prefix = f"[{layer.name}{' · off' if not layer.enabled else ''}] " if layer else ""
+            self.listbox.insert("end", prefix + shape.label)
         indices = self.selected_indices()
         for index in indices:
             self.listbox.selection_set(index)
@@ -1201,6 +1216,8 @@ class GeometryWindow:
         self.redo_button.configure(state="normal" if self.redo_stack else "disabled")
         self.draw()
         self.update_frame_controls()
+        if self.layer_window is not None and self.layer_window.window.winfo_exists():
+            self.layer_window.refresh()
 
     def update_selection_ui(self, indices=None):
         indices = tuple(indices if indices is not None else self.selected_indices())
@@ -1214,6 +1231,11 @@ class GeometryWindow:
         self.mirror_y_button.configure(state="disabled" if multiple else "normal")
         self.add_value_button.configure(state="disabled" if multiple else "normal")
         self.apply_value_button.configure(text=f"Apply process to {len(indices)}" if multiple else "Apply values")
+        assigned = any(self.document.shapes[i].layer for i in indices)
+        for name in ("speed", "power", "passes"):
+            self.field_entries[name].configure(state="disabled" if assigned else "normal")
+        if assigned:
+            self.selection_status.set("Layer settings · edit in Cut layers")
         self.update_bounds_text(indices)
 
     def update_bounds_text(self, indices=None):
@@ -1246,8 +1268,9 @@ class GeometryWindow:
         if self.selected is None or not 0 <= self.selected < len(self.document.shapes):
             return
         shape = self.document.shapes[self.selected]
+        layer = next((l for l in self.document.layers if l.name == shape.layer), None)
         for name in self.fields:
-            value = getattr(shape, name)
+            value = getattr(layer if layer and name in ("speed", "power", "passes") else shape, name)
             self.fields[name].set(f"{value:g}" if isinstance(value, (int, float)) else value)
         self.font_family.set(shape.font_family)
         self.mirror_x.set(shape.mirror_x)
@@ -1483,7 +1506,8 @@ class GeometryWindow:
         self.bed.create_text(x1, y1 - 9, text=f"{BED_X:g}, {BED_Y:g}", anchor="e", fill="#405864", font=("Segoe UI", 9))
         selected_indices = set(self.selected_indices())
         for index, shape in enumerate(self.document.shapes):
-            color, width = ("#155eef", 3) if index in selected_indices else ("#405864", 2)
+            layer = next((l for l in self.document.layers if l.name == shape.layer), None)
+            color, width = ("#155eef", 3) if index in selected_indices else ("#aab3bf" if layer and not layer.enabled else "#405864", 2)
             for path in shape_paths(shape):
                 coords = [coordinate for point in path for coordinate in (x0+point[0]*scale, y0-point[1]*scale)]
                 if len(coords) >= 4:
@@ -1510,7 +1534,7 @@ class GeometryWindow:
             bottom = y0-min(bound[1] for bound in bounds)*scale
             top = y0-max(bound[3] for bound in bounds)*scale
             self.bed.create_rectangle(left, top, right, bottom, outline="#155eef", width=2, dash=(6, 3))
-        if self.document.shapes:
+        if self.document.output_shapes():
             points = self.document.frame_points()
             coords = []
             for x, y in points:
@@ -1540,7 +1564,7 @@ class JobPreviewWindow:
         ttk.Label(header, text="Job preview", style="Title.TLabel").pack(side="left")
         ttk.Label(header, text="READ ONLY · NO MACHINE COMMANDS", style="Quiet.TLabel").pack(side="right")
         metrics = self.metrics
-        summary = (f"{len(editor.document.shapes)} objects   ·   {metrics['segments']} moves   ·   "
+        summary = (f"{len(editor.document.output_shapes())} output objects   ·   {metrics['segments']} moves   ·   "
                    f"Laser path {metrics['burn_distance']:.1f} mm   ·   Travel {metrics['rapid_distance']:.1f} mm   ·   "
                    f"Estimated {self.duration(metrics['estimated_seconds'])}   ·   Max S{metrics['max_power']}")
         ttk.Label(outer, text=summary, style="Section.TLabel").pack(fill="x", pady=(0, 12))

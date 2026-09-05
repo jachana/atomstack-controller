@@ -177,3 +177,15 @@ reports, and absence of firmware errors, not an acoustic measurement.
 - Preview invalidation is exercised through a real Tk window: changing a design closes
   its existing preview before the mutation, preventing a stale preview from remaining
   visible beside newer geometry.
+
+
+## Version 0.13.0
+
+- Named layer tests compare execution order, effective process values, pass counts,
+  generated output, preview paths, Frame bounds, and maximum power.
+- Output-off geometry is excluded consistently; an all-disabled job is refused.
+- Schema 3 round trips preserve ordered layers, switches, and assignments. Duplicate
+  names and missing references are rejected before replacing a project.
+- Real Tk tests exercise assignment, numeric edits, output toggling, preview closure,
+  and atomic Undo. Layer controls were rendered and inspected in the simulator.
+- Physical USB verification remains unavailable: Windows reports no serial devices.

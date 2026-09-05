@@ -6,8 +6,8 @@ sending over USB.
 
 ## Run
 
-Open **`AtomstackController.exe`** (current version 0.12.0) or the explicitly versioned
-`AtomstackController-0.12.0.exe` from this delivery folder. Close older
+Open **`AtomstackController.exe`** (current version 0.13.0) or the explicitly versioned
+`AtomstackController-0.13.0.exe` from this delivery folder. Close older
 versions first. No Python installation
 is needed for the executable. Choose **Open simulator** to explore without hardware.
 
@@ -275,3 +275,21 @@ Protocol references: [GRBL jogging](https://github.com/gnea/grbl/wiki/Grbl-v1.1-
 and [GRBL interface](https://github.com/gnea/grbl/wiki/Grbl-v1.1-Interface).
 These document upstream GRBL; compatibility with Atomstack V1.055 still needs
 hardware confirmation.
+
+
+## Cut layers (0.13.0)
+
+Open **Cut layers…** in Design & Send. Add a named layer, set speed, power, passes,
+and Output on, then select objects in the design and choose **Assign selected objects**.
+Layers run from top to bottom; Move up/down changes execution order. Unassigned objects
+run last, keeping their individual settings (including burn-test values).
+
+Layer settings are shared: use **Save changes** to update every assigned object.
+The inspector displays the effective settings and directs you to Cut layers for edits.
+**Use individual settings** detaches selected objects while preserving their current
+speed/power/passes and enables their output. Output-off objects stay visible in gray
+but are excluded from Frame, preview, estimates, and direct machine output.
+
+Undo/Redo includes layer settings, order, assignments, and output switches. Project
+schema 3 persists layers; schema 1 and 2 designs still open without changing their
+individual process settings. Preview closes when layers change.

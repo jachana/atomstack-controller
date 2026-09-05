@@ -27,8 +27,11 @@ class Shape:
     rotation: float = 0.0
     mirror_x: bool = False
     mirror_y: bool = False
+    layer: str = ""
 
     def validated(self):
+        if not isinstance(self.layer, str):
+            raise ValueError("Layer must be a name.")
         values = (self.x, self.y, self.width, self.height)
         if not all(math.isfinite(v) for v in values):
             raise ValueError("Geometry values must be finite numbers.")
@@ -75,9 +78,75 @@ class Shape:
         return f"{self.kind.title()} · X {self.x:g} Y {self.y:g} · {self.width:g} × {self.height:g}{transform}"
 
 
+@dataclass(frozen=True)
+class CutLayer:
+    name: str
+    speed: int = 1000
+    power: int = 300
+    passes: int = 1
+    enabled: bool = True
+
+    def validated(self):
+        if not isinstance(self.name, str) or not self.name.strip() or self.name != self.name.strip() or len(self.name) > 40 or not self.name.isprintable():
+            raise ValueError("Layer name must contain 1–40 printable characters without surrounding spaces.")
+        if type(self.enabled) is not bool:
+            raise ValueError("Layer output must be on or off.")
+        if any(type(v) is not int for v in (self.speed, self.power, self.passes)):
+            raise ValueError("Layer speed, power, and passes must be whole numbers.")
+        Shape("rectangle", 0, 0, 1, 1, self.speed, self.power, self.passes).validated()
+        return self
+
+
 class Document:
     def __init__(self):
         self.shapes = []
+        self.layers = []
+
+    def validate_layers(self):
+        names = [layer.validated().name for layer in self.layers]
+        if len(set(names)) != len(names):
+            raise ValueError("Layer names must be unique.")
+        if any(shape.layer and shape.layer not in names for shape in self.shapes):
+            raise ValueError("A shape refers to a missing cut layer.")
+
+    def output_shapes(self):
+        """Resolve one common output plan for Frame, preview, and machine sending.
+
+        Named layers execute in list order; unassigned objects follow in design
+        order and retain individual settings (including burn-test cells).
+        """
+        self.validate_layers()
+        result = []
+        for layer in self.layers:
+            if layer.enabled:
+                result.extend((i, replace(shape, speed=layer.speed, power=layer.power,
+                                          passes=layer.passes).validated())
+                              for i, shape in enumerate(self.shapes) if shape.layer == layer.name)
+        result.extend((i, shape.validated()) for i, shape in enumerate(self.shapes) if not shape.layer)
+        return tuple(result)
+
+    def to_payload(self):
+        self.validate_layers()
+        return {"format": "atomstack-design", "version": 3,
+                "bed": {"width": BED_X, "height": BED_Y},
+                "shapes": [shape.validated().__dict__ for shape in self.shapes],
+                "layers": [layer.__dict__ for layer in self.layers]}
+
+    @classmethod
+    def from_payload(cls, data):
+        if not isinstance(data, dict) or data.get("format") != "atomstack-design" or not isinstance(data.get("shapes"), list):
+            raise ValueError("This is not an Atomstack design file.")
+        version = data.get("version", 1)
+        if type(version) is not int or version not in (1, 2, 3):
+            raise ValueError(f"Unsupported Atomstack design version: {version}.")
+        document = cls()
+        document.shapes = [Shape(**item).validated() for item in data["shapes"]]
+        if version == 3:
+            if not isinstance(data.get("layers"), list):
+                raise ValueError("Design layers must be a list.")
+            document.layers = [CutLayer(**item).validated() for item in data["layers"]]
+        document.validate_layers()
+        return document
 
     def add(self, shape):
         self.shapes.append(shape.validated())
@@ -106,11 +175,12 @@ class Document:
         return indices
 
     def frame_points(self, margin=2.0):
-        if not self.shapes:
-            raise ValueError("Add geometry before framing.")
+        output = self.output_shapes()
+        if not output:
+            raise ValueError("Enable a layer or add geometry before framing.")
         if not math.isfinite(margin) or margin < 0 or margin > 20:
             raise ValueError("Frame margin must be between 0 and 20 mm.")
-        bounds = [shape_bounds(shape) for shape in self.shapes]
+        bounds = [shape_bounds(shape) for _, shape in output]
         left = max(0.0, min(value[0] for value in bounds) - margin)
         bottom = max(0.0, min(value[1] for value in bounds) - margin)
         right = min(BED_X, max(value[2] for value in bounds) + margin)
@@ -118,14 +188,16 @@ class Document:
         return ((left, bottom), (right, bottom), (right, top), (left, top), (left, bottom))
 
     def gcode(self, machine_origin=None):
-        if not self.shapes:
-            raise ValueError("Add geometry before exporting G-code.")
+        output = self.output_shapes()
+        if not output:
+            raise ValueError("Enable a layer or add geometry before sending a job.")
         if machine_origin is None or len(machine_origin) != 2 or not all(math.isfinite(v) for v in machine_origin):
             raise ValueError("A confirmed live machine origin is required for safe G-code export.")
         ox, oy = machine_origin
         lines = ["; Atomstack personal controller - machine-coordinate export",
                  f"; Confirmed machine origin: X{ox:.3f} Y{oy:.3f}", "G21", "G90", "M5", "S0"]
-        for index, shape in enumerate(self.shapes, 1):
+        for source_index, shape in output:
+            index = source_index + 1
             shape.validated()
             paths = shape_paths(shape)
             safe_text = shape.text.encode("ascii", "replace").decode("ascii")
@@ -147,14 +219,15 @@ class Document:
         rate. Callers that have read $110/$111 pass it in; ASSUMED_RAPID_FEED
         stands in only until the machine has said what it can do.
         """
-        if not self.shapes:
-            raise ValueError("Add geometry before previewing.")
+        output = self.output_shapes()
+        if not output:
+            raise ValueError("Enable a layer or add geometry before previewing.")
         if len(start) != 2 or not all(math.isfinite(value) for value in start):
             raise ValueError("Preview start must be a finite X/Y point.")
         rapid_feed = rapid_feed or ASSUMED_RAPID_FEED
         segments = []
         current = tuple(start)
-        for shape_index, shape in enumerate(self.shapes):
+        for shape_index, shape in output:
             shape.validated()
             for pass_index in range(shape.passes):
                 for points in shape_paths(shape):
@@ -179,7 +252,7 @@ class Document:
             seconds += distance / feed * 60
         return {"segments": len(segments), "rapid_distance": rapid_distance,
                 "burn_distance": burn_distance, "estimated_seconds": seconds,
-                "max_power": max(shape.power for shape in self.shapes)}
+                "max_power": max(shape.power for _, shape in self.output_shapes())}
 
 
 def path_points(shape):

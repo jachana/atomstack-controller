@@ -84,7 +84,7 @@ Verified against the code, not against `ROADMAP.md`, which is out of date on rot
 | Zoom, pan, fit | Done | Cursor-anchored zoom fixed 2026-09-04 |
 | Project files | Done | Open and save, no dirty-state tracking |
 | Job preview with time and distance | Done | Separate read-only window |
-| Named cut layers | Missing | The largest gap. See below |
+| Named cut layers | Done | Shared settings, execution order, output switches; v0.13 |
 | SVG import | Missing | Blocks every design not drawn in-app |
 | DXF import | Missing | |
 | Arbitrary-angle rotation | Missing | Model stores any angle; UI offers only 90 |
@@ -97,10 +97,9 @@ Verified against the code, not against `ROADMAP.md`, which is out of date on rot
 | Camera alignment | Out of scope | |
 | Print and cut, node editing, offsets | Out of scope | |
 
-Named cut layers is first because it is the difference between a toy and a tool.
-Cutting an outline at one speed and power while engraving the inside at another, in a
-single job, is what most real work needs. Everything today shares one setting per
-shape and one send, so any two-operation design means two jobs and a re-registration.
+Named cut layers now manage shared settings, output toggles, and execution order.
+Shapes already supported different settings in a single job; layers make those
+operations easier to organize and edit together.
 
 SVG import is second and for the same reason: without it, only designs drawn inside
 this app can be cut, which rules out anything from a vector editor.

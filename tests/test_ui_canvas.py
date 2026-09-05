@@ -62,6 +62,7 @@ class CanvasBehaviour(unittest.TestCase):
         editor = self.app.geometry
         editor.invalidate_preview()
         editor.document.shapes.clear()
+        editor.document.layers.clear()
         editor.selected = None
         editor.selection.clear()
         editor.interaction = None
@@ -191,7 +192,7 @@ class CanvasBehaviour(unittest.TestCase):
             editor.design_path = save_path
             editor.save_design()
             saved = json.loads(save_path.read_text(encoding="utf-8"))
-            self.assertEqual(saved["version"], 2)
+            self.assertEqual(saved["version"], 3)
             self.assertEqual(saved["shapes"][0]["rotation"], 90)
             self.assertTrue(saved["shapes"][0]["mirror_x"])
             self.assertEqual(list(Path(folder).glob("*.tmp")), [],
@@ -253,6 +254,39 @@ class CanvasBehaviour(unittest.TestCase):
         self.root.update()
         self.assertIsNone(editor.preview_window)
         self.assertFalse(preview.window.winfo_exists())
+
+    def test_layer_assignment_toggle_and_undo_are_atomic(self):
+        from atomstack.layer_ui import LayerWindow
+        editor = self.app.geometry
+        self.rectangle(10, 20, 40, 30)
+        editor.set_selection((0,), 0)
+        manager = LayerWindow(editor)
+        editor.layer_window = manager
+        try:
+            manager.add()
+            self.root.update()
+            manager.assign()
+            self.assertEqual(editor.document.shapes[0].layer, 'Engrave')
+            self.assertEqual(editor.document.output_shapes()[0][1].speed, 3000)
+            editor.fields['x'].set('12')
+            editor.apply()
+            self.assertEqual(editor.document.shapes[0].layer, 'Engrave')
+            self.assertEqual(editor.document.shapes[0].x, 12)
+            editor.open_preview()
+            preview = editor.preview_window
+            manager.enabled.set(False)
+            manager.save()
+            self.assertEqual(editor.document.output_shapes(), ())
+            self.assertFalse(preview.window.winfo_exists())
+            self.assertTrue(editor.preview_button.instate(['disabled']))
+            editor.undo()
+            self.assertTrue(editor.document.layers[0].enabled)
+            editor.undo()  # numeric geometry edit
+            editor.undo()  # assignment
+            self.assertEqual(editor.document.shapes[0].layer, '')
+        finally:
+            manager.window.destroy()
+            editor.layer_window = None
 
 
 if __name__ == "__main__":
