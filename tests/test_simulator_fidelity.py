@@ -24,21 +24,27 @@ class Clock:
         return self.time
 
 
-def responses(sim, command):
-    """Drain the wire. A move is acknowledged a few reads after it is accepted."""
+def responses(sim, command, settle=3600.0):
+    """Send one command and drain the wire after the machine has had time to move.
+
+    A move is acknowledged when it enters the planner, and the planner only
+    empties as time passes, so give the machine an hour of its own clock unless
+    a test is asking what the wire looks like sooner.
+    """
     sim.write(command if isinstance(command, bytes) else (command + "\n").encode())
+    sim.clock.time += settle
     out = b""
-    quiet = 0
-    while quiet < sim.MOTION_READS + 2:
+    while True:
         chunk = sim.read()
-        quiet = 0 if chunk else quiet + 1
+        if not chunk:
+            return out.decode()
         out += chunk
-    return out.decode()
 
 
 class FixtureFidelity(unittest.TestCase):
     def setUp(self):
-        self.sim = Simulator()
+        self.clock = Clock()
+        self.sim = Simulator(self.clock)
 
     def test_settings_come_from_the_observed_dump(self):
         for key, value in EXPECTED.items():
@@ -60,7 +66,8 @@ class AcceptsWhatTheFirmwareAccepts(unittest.TestCase):
     """Nothing here is safe. All of it is what GRBL would really do."""
 
     def setUp(self):
-        self.sim = Simulator()
+        self.clock = Clock()
+        self.sim = Simulator(self.clock)
 
     def test_a_jog_far_outside_the_table_is_accepted(self):
         self.assertEqual(responses(self.sim, "$J=G21 G91 X9999.000 F300"), "ok\n")
@@ -106,6 +113,8 @@ class AcceptsWhatTheFirmwareAccepts(unittest.TestCase):
         self.assertIn("Hold:0", responses(self.sim, b"?"))
         self.assertEqual(responses(self.sim, "G53 G1 X-200.000 Y-150.000 F1000"), "")
         self.assertEqual(responses(self.sim, b"~"), "ok\n")
+        self.assertIn("Run", responses(self.sim, b"?", settle=0))
+        self.clock.time += 3600
         self.assertIn("Idle", responses(self.sim, b"?"))
 
     def test_a_hold_then_jog_cancel_discards_the_unfinished_move(self):
@@ -128,7 +137,7 @@ class ControllerRefusesWhatTheMachineWouldAllow(unittest.TestCase):
     def setUp(self):
         self.clock = Clock()
         self.controller = Controller(self.clock)
-        self.sim = Simulator()
+        self.sim = Simulator(self.clock)
         self.controller.attach(self.sim, settle=0)
         self.pump(60)
         self.assertTrue(self.controller.ready, self.controller.message)
@@ -156,22 +165,22 @@ class ControllerRefusesWhatTheMachineWouldAllow(unittest.TestCase):
                          "a refused request must not put bytes on the wire")
 
     def test_the_bare_simulator_accepts_the_jog_the_controller_refuses(self):
-        fresh = Simulator()
+        fresh = Simulator(Clock())
         self.assertEqual(responses(fresh, "$J=G21 G91 X9999.000 F300"), "ok\n")
         self.assert_refused(self.controller.jog, "X", 1, 9999.0, 300)
 
     def test_an_unlisted_jog_distance_is_refused_though_the_machine_would_move(self):
-        fresh = Simulator()
+        fresh = Simulator(Clock())
         self.assertEqual(responses(fresh, "$J=G21 G91 X0.037 F300"), "ok\n")
         self.assert_refused(self.controller.jog, "X", 1, 0.037, 300)
 
     def test_a_feed_above_the_live_limit_is_refused(self):
-        fresh = Simulator()
+        fresh = Simulator(Clock())
         self.assertEqual(responses(fresh, "$J=G21 G91 X1.000 F999999"), "ok\n")
         self.assert_refused(self.controller.jog, "X", 1, 1.0, 999999)
 
     def test_click_to_jog_outside_the_bed_is_refused(self):
-        fresh = Simulator()
+        fresh = Simulator(Clock())
         self.assertEqual(responses(fresh, "G53 G1 X5000.000 Y5000.000 F1000"), "ok\n")
         self.assert_refused(self.controller.jog_to, 5000.0, 5000.0, 3000)
 
@@ -180,7 +189,7 @@ class ControllerRefusesWhatTheMachineWouldAllow(unittest.TestCase):
                             ["G21", "G90", "M4 S200", "G2 X1 Y1 I1 J1", "M5", "S0"])
 
     def test_a_job_over_the_power_ceiling_is_refused_though_grbl_would_clamp(self):
-        fresh = Simulator()
+        fresh = Simulator(Clock())
         self.assertEqual(responses(fresh, "M4 S5000"), "ok\n")
         self.assertEqual(fresh.power, 1000)
         origin = self.controller.origin

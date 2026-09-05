@@ -19,7 +19,7 @@ class SessionTests(unittest.TestCase):
     def setUp(self):
         self.clock = Clock()
         self.c = Controller(self.clock)
-        self.t = Simulator()
+        self.t = Simulator(self.clock)
         self.c.attach(self.t, settle=0)
         self.pump(60)
         self.assertTrue(self.c.ready, self.c.message)
@@ -241,7 +241,7 @@ class SessionTests(unittest.TestCase):
         self.home()
         points = ((8, 18), (52, 18), (52, 52), (8, 52), (8, 18))
         self.c.frame(points, 600)
-        self.pump(80)
+        self.pump(1200)  # 60 s: the outline is 156 mm of real motion at 600 mm/min.
         frame_writes = [x for x in self.t.writes if x.startswith(b"$J=G21 G90 G53")]
         self.assertEqual(len(frame_writes), 5)
         self.assertEqual(frame_writes[0], b"$J=G21 G90 G53 X-280.000 Y-283.000 F600\n")
@@ -306,7 +306,7 @@ class SessionTests(unittest.TestCase):
     def test_disconnect_and_reconnect_clear_home(self):
         self.home()
         self.c.disconnect()
-        self.c.attach(Simulator(), settle=0)
+        self.c.attach(Simulator(self.clock), settle=0)
         self.pump(60)
         self.assertTrue(self.c.ready)
         self.assertIsNone(self.c.origin)
@@ -377,25 +377,52 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(self.c.phase, "idle")
 
     def test_long_pause_keeps_the_session_alive_and_resumes(self):
-        """A held machine stops acknowledging, which must not read as a fault."""
+        """A held machine never finishes the block the next ack is waiting on."""
         self.home()
-        lines = ("G21", "G90", "M5", "S0", "G53 G0 X-287.000 Y-300.000",
-                 "M4 S100", "G53 G1 X-280.000 Y-300.000 F3000", "M5", "S0")
+        ox, oy = self.c.origin
+        lines = ["G21", "G90", "M5", "S0"]
+        for index in range(20):
+            lines += [f"G53 G0 X{ox + 10:.3f} Y{oy + 10 + index:.3f}", "M4 S200",
+                      f"G53 G1 X{ox + 30:.3f} Y{oy + 10 + index:.3f} F60", "M5", "S0"]
+        lines += ["M5", "S0"]
         self.c.run_job(lines)
-        for _ in range(40):  # Pause with a move in flight, as an operator would.
-            self.pump(1)
-            if self.c.pending and self.c.pending.text.startswith("G53"):
-                break
-        self.assertTrue(self.c.pending and self.c.pending.text.startswith("G53"))
+        self.pump(2000)  # Stream until the planner is full and acks lag.
+        self.assertTrue(self.c.pending, "the planner should be holding an ack back")
         self.c.pause_job()
-        self.pump(400)  # 20 s held, well past the per-command timeout.
+        self.pump(12000)  # Ten minutes held: nothing can arrive from the machine.
         self.assertTrue(self.c.connected, self.c.message)
         self.assertTrue(self.c.job_paused)
         self.assertTrue(self.c.phase.startswith("job"), self.c.phase)
         self.c.resume_job()
-        self.pump(80)
+        for _ in range(200000):
+            self.pump(1)
+            if self.c.phase == "idle" or not self.c.connected:
+                break
         self.assertEqual(self.c.phase, "idle", self.c.message)
+        self.assertEqual(self.c.job_done, self.c.job_total)
         self.assertEqual(self.t.power, 0)
+
+    def test_a_slow_job_outlasts_the_planner_without_a_false_timeout(self):
+        """A full planner delays an acknowledgement far past any fixed timeout."""
+        self.home()
+        ox, oy = self.c.origin
+        lines = ["G21", "G90", "M5", "S0"]
+        for index in range(20):  # More passes than GRBL has planner blocks.
+            lines += [f"G53 G0 X{ox + 10:.3f} Y{oy + 10 + index:.3f}", "M4 S200",
+                      f"G53 G1 X{ox + 30:.3f} Y{oy + 10 + index:.3f} F60", "M5", "S0"]
+        lines += ["M5", "S0"]
+        self.c.run_job(lines)
+        for _ in range(200000):
+            self.pump(1)
+            if self.c.phase == "idle" or not self.c.connected:
+                break
+        self.assertTrue(self.c.connected, self.c.message)
+        self.assertEqual(self.c.phase, "idle", self.c.message)
+        self.assertEqual(self.c.job_done, self.c.job_total)
+        self.assertEqual(self.t.power, 0)
+        # 20 mm at 60 mm/min is 20 s a pass: the job really did outlast the
+        # ten seconds a fixed per-command timeout used to allow.
+        self.assertGreater(self.clock.time, 20 * 20)
 
     def test_job_stops_on_excess_reported_power_or_wrong_final_position(self):
         self.home()
@@ -439,7 +466,7 @@ class SessionTests(unittest.TestCase):
                 if data == b"?":
                     self.rx[-1] = self.rx[-1].replace(b"Idle", b"Alarm")
         self.c.disconnect()
-        transport = AlarmSimulator()
+        transport = AlarmSimulator(self.clock)
         self.c.attach(transport, settle=0)
         self.pump(60)
         self.assertTrue(self.c.ready, self.c.message)
@@ -478,7 +505,7 @@ class SessionTests(unittest.TestCase):
 
     def test_profile_mismatch_at_connect_cannot_arm(self):
         self.c.disconnect()
-        transport = Simulator()
+        transport = Simulator(self.clock)
         transport.fixture = transport.fixture.replace("$130=365.000", "$130=400.000")
         self.c.attach(transport, settle=0)
         self.pump(60)

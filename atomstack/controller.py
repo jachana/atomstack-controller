@@ -13,6 +13,7 @@ import time
 from .protocol import EXPECTED, READ_COMMANDS, parse_setting, parse_status
 
 JOG_FEEDS = (180, 300, 600, 1000, 1200, 3000, 6000, 12000, 20000)
+PLANNER_BLOCKS = 16  # GRBL 1.1 BLOCK_BUFFER_SIZE; how far ahead an ack can be held.
 
 
 class GuardError(RuntimeError):
@@ -64,6 +65,8 @@ class Controller:
         self.frame_waypoints = deque()
         self.frame_feed = None
         self.job_commands = deque()
+        self.job_durations = deque()
+        self.job_window = deque(maxlen=PLANNER_BLOCKS)
         self.job_total = 0
         self.job_done = 0
         self.job_paused = False
@@ -349,15 +352,18 @@ class Controller:
         lines = tuple(lines)
         self._guard(require_home=True, allow_status_poll=True)
         commands = []
+        durations = []
         final_target = None
+        position = self.status.machine
         for raw in lines:
             command = raw.strip()
             if not command or command.startswith(";"):
                 continue
-            move_target = self._validate_job_command(command)
+            move_target, seconds = self._validate_job_command(command, position)
             if move_target is not None:
-                final_target = move_target
+                final_target = position = move_target
             commands.append(command)
+            durations.append(seconds)
         if not commands or commands[-2:] != ["M5", "S0"]:
             raise GuardError("Generated job must end with M5 and S0.")
         if self._status_poll_pending():
@@ -367,21 +373,25 @@ class Controller:
             self.message = "Job queued behind the current position update."
             return
         self.job_commands = deque(commands)
+        self.job_durations = deque(durations)
+        self.job_window = deque(maxlen=PLANNER_BLOCKS)
         self.job_total = len(commands)
         self.job_done = 0
         self.job_paused = False
         self.job_expected_power = 0
         self.job_final_target = final_target
         self.phase = "job-command"
-        self.motion_deadline = self.clock() + 3600
+        # The job is only late once the motion it commands could not have run.
+        self.motion_deadline = self.clock() + sum(durations) + 120
         self._start_job_command()
 
-    def _validate_job_command(self, command):
+    def _validate_job_command(self, command, position=None):
+        """Check one generated command and say how long its motion takes."""
         if command in ("G21", "G90", "M5", "S0"):
-            return None
+            return None, 0.0
         power = re.fullmatch(r"M4 S(\d+)", command)
         if power and 0 <= int(power[1]) <= self.settings.get(30, 0):
-            return None
+            return None, 0.0
         move = re.fullmatch(r"G53 G([01]) X(-?\d+(?:\.\d+)?) Y(-?\d+(?:\.\d+)?)(?: F(\d+))?", command)
         if not move:
             raise GuardError(f"Generated job contains an unsupported command: {command}")
@@ -391,7 +401,9 @@ class Controller:
             raise GuardError("Generated job contains a move outside the app bounds.")
         if move[1] == "1" and (not move[4] or not 60 <= int(move[4]) <= self.max_xy_feed):
             raise GuardError("Generated job feed exceeds the live machine limit.")
-        return machine
+        feed = int(move[4]) if move[4] else self.max_xy_feed
+        seconds = math.dist(position, machine) / feed * 60 if position and feed else 0.0
+        return machine, seconds
 
     def _start_job_command(self):
         if self.job_paused:
@@ -401,12 +413,16 @@ class Controller:
             self._enqueue("$G", "job-modal")
             return
         command = self.job_commands.popleft()
+        self.job_window.append(self.job_durations.popleft() if self.job_durations else 0.0)
         if command.startswith("M4 S"):
             self.job_expected_power = int(command.split("S", 1)[1])
         elif command in ("M5", "S0"):
             self.job_expected_power = 0
         self.phase = "job-command"
-        self._enqueue(command, "job", 10)
+        # GRBL acknowledges a move when it is parsed into the planner, so on a
+        # full buffer this acknowledgement waits for a block to finish. The
+        # longest block it could be waiting on is one of the last few sent.
+        self._enqueue(command, "job", 10 + max(self.job_window, default=0.0))
         self.message = f"Sending job · {self.job_done}/{self.job_total} commands · power {self.job_expected_power}."
 
     def pause_job(self):
@@ -425,7 +441,8 @@ class Controller:
         # command and the job as a whole a fresh window from the resume.
         now = self.clock()
         self.sent_at = now
-        self.motion_deadline = now + 3600
+        # What is left to send, plus what the planner is still holding.
+        self.motion_deadline = now + sum(self.job_durations) + sum(self.job_window) + 120
         # An in-flight command still owes its acknowledgement, and that
         # acknowledgement is what sends the next one.
         if not self.pending and not self.queue:

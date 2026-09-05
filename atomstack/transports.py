@@ -1,6 +1,7 @@
 """Byte transport boundary. A future Wi-Fi adapter only implements this protocol."""
 from typing import Protocol
 from collections import deque
+import math
 import re
 
 from .protocol import parse_setting
@@ -55,6 +56,13 @@ class Simulator:
 
     ``error:20`` is reserved for genuinely unrecognised commands, which is what
     GRBL uses it for.
+
+    Motion goes through a planner buffer, because that is where a sender's
+    timing assumptions break. GRBL acknowledges a move when it is parsed into
+    the buffer, so acknowledgements come back instantly until the buffer is
+    full, and then only as fast as the machine physically finishes blocks. A
+    feed hold stops that clock entirely. A simulator that acknowledges every
+    move instantly cannot show a sender waiting on a slow job or a paused one.
     """
 
     JOG_RELATIVE = re.compile(r"\$J=G21 G91 ([XYZ])(-?\d+(?:\.\d+)?) F(\d+(?:\.\d+)?)")
@@ -64,8 +72,12 @@ class Simulator:
         r"G53 G([01]) X(-?\d+(?:\.\d+)?) Y(-?\d+(?:\.\d+)?)(?: F(\d+(?:\.\d+)?))?")
     SPINDLE = re.compile(r"M([34]) S(\d+)")
 
-    def __init__(self):
+    PLANNER_BLOCKS = 16  # GRBL 1.1 BLOCK_BUFFER_SIZE.
+
+    def __init__(self, clock=None):
         from pathlib import Path
+        import time
+        self.clock = clock or time.monotonic
         self.fixture = (Path(__file__).parent / "fixtures" / "observed.txt").read_text()
         self.settings = {}
         for line in self.fixture.splitlines():
@@ -78,15 +90,15 @@ class Simulator:
         self.position = list(self.home)
         self.power = 0
         self.closed = False
-        # Feed hold. Real GRBL stops the planner and withholds the
-        # acknowledgement of any motion it has not finished, so a paused job
-        # goes quiet on the wire until the operator resumes.
+        # Planner blocks, as finish times on the machine's own clock. A feed
+        # hold freezes that clock, so held blocks never finish and the move
+        # waiting for space is never acknowledged.
+        self.blocks = deque()
+        self.waiting = None
         self.holding = False
-        self.held = deque()
-        # Motion is not instantaneous: a move is acknowledged a few reads after
-        # it is accepted, and a held machine never finishes it at all.
-        self.moving_ok = None
-        self.moving_reads = 0
+        self.held_total = 0.0
+        self.hold_at = 0.0
+        self.hold_started = 0.0
 
     @property
     def max_power(self):
@@ -96,18 +108,39 @@ class Simulator:
     def soft_limits(self):
         return bool(self.settings.get(20, 0))
 
-    MOTION_READS = 3
+    @property
+    def max_feed(self):
+        return min(self.settings.get(110, 6000.0), self.settings.get(111, 6000.0))
+
+    def machine_now(self):
+        """Time as the machine experiences it. A feed hold stops it."""
+        return self.hold_at if self.holding else self.clock() - self.held_total
+
+    def drain(self):
+        """Retire finished blocks and admit the move that was waiting for room."""
+        now = self.machine_now()
+        while self.blocks and self.blocks[0] <= now:
+            self.blocks.popleft()
+        if self.waiting is not None and not self.holding and len(self.blocks) < self.PLANNER_BLOCKS:
+            x, y, feed = self.waiting
+            self.waiting = None
+            self.rx.append(self.admit(x, y, feed).encode())
+
+    def admit(self, x, y, feed):
+        """Queue one block and acknowledge it, the way GRBL's parser does."""
+        seconds = math.dist(self.position, (x, y)) / (max(feed, 1.0) / 60.0)
+        start = max(self.blocks[-1] if self.blocks else 0.0, self.machine_now())
+        self.blocks.append(start + seconds)
+        self.position = [x, y]
+        return "ok\n"
 
     def read(self):
-        if self.moving_ok and not self.holding:
-            self.moving_reads += 1
-            if self.moving_reads >= self.MOTION_READS:
-                self.rx.append(self.moving_ok)
-                self.moving_ok = None
+        self.drain()
         return self.rx.popleft() if self.rx else b""
 
     def status_line(self):
-        state = "Hold:0" if self.holding else "Idle"
+        self.drain()
+        state = "Hold:0" if self.holding else ("Run" if self.blocks else "Idle")
         return ("<{}|MPos:{:.3f},{:.3f},0.000|FS:0,{}|APP:51|USB:0>\n"
                 .format(state, self.position[0], self.position[1], self.power))
 
@@ -141,33 +174,32 @@ class Simulator:
         if data == b"\x18":
             self.position = list(self.home)
             self.power = 0
-            self.holding = False
-            self.held.clear()
-            self.moving_ok = None
+            self.clear_motion()
             return "Grbl 1.1h ['$' for help]\n"
         if data == b"!":
-            self.holding = True
+            if not self.holding:
+                self.hold_at = self.machine_now()
+                self.hold_started = self.clock()
+                self.holding = True
             return ""
         if data == b"\x85":
-            # Jog cancel discards held motion instead of running it later.
-            self.holding = False
-            self.held.clear()
-            self.moving_ok = None
+            # Jog cancel empties the planner instead of running what is in it.
+            self.clear_motion()
             return ""
         if data == b"~":
-            self.holding = False
-            responses = "".join(self.run(command) for command in self.held)
-            self.held.clear()
-            return responses
-        if self.holding and self.is_motion(command):
-            # Held motion is acknowledged only once it actually runs.
-            self.held.append(command)
+            self.resume()
             return ""
         return self.run(command)
 
-    def is_motion(self, command):
-        return any(pattern.fullmatch(command) for pattern
-                   in (self.MOVE, self.JOG_ABSOLUTE, self.JOG_RELATIVE))
+    def clear_motion(self):
+        self.resume()
+        self.blocks.clear()
+        self.waiting = None
+
+    def resume(self):
+        if self.holding:
+            self.held_total += self.clock() - self.hold_started
+            self.holding = False
 
     def run(self, command):
         if command == "$I":
@@ -198,11 +230,12 @@ class Simulator:
 
         move = self.MOVE.fullmatch(command)
         if move:
-            return self.go(float(move[2]), float(move[3]))
+            feed = float(move[4]) if move[4] else self.max_feed
+            return self.go(float(move[2]), float(move[3]), feed)
 
         absolute = self.JOG_ABSOLUTE.fullmatch(command)
         if absolute:
-            return self.go(float(absolute[1]), float(absolute[2]))
+            return self.go(float(absolute[1]), float(absolute[2]), float(absolute[3]))
 
         relative = self.JOG_RELATIVE.fullmatch(command)
         if relative:
@@ -211,18 +244,21 @@ class Simulator:
                 return "ok\n"
             target = list(self.position)
             target[0 if axis == "X" else 1] += delta
-            return self.go(*target)
+            return self.go(*target, float(relative[3]))
 
         return "error:20\n"
 
-    def go(self, x, y):
+    def go(self, x, y, feed):
         error = self.travel_error(x, y)
         if error:
             return error
-        self.position = [x, y]
-        self.moving_ok = b"ok\n"
-        self.moving_reads = 0
-        return ""
+        self.drain()
+        if self.holding or len(self.blocks) >= self.PLANNER_BLOCKS:
+            # No room, or no motion at all: the parser blocks here, and with it
+            # the acknowledgement. Nothing else is read from the wire meanwhile.
+            self.waiting = (x, y, feed)
+            return ""
+        return self.admit(x, y, feed)
 
     def close(self):
         self.closed = True

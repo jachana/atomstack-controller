@@ -89,7 +89,7 @@ class BoundsOnAConnectedSession(unittest.TestCase):
     def setUp(self):
         self.clock = Clock()
         self.controller = Controller(self.clock)
-        self.sim = Simulator()
+        self.sim = Simulator(self.clock)
         self.controller.attach(self.sim, settle=0)
         for _ in range(60):
             self.clock.time += 0.05
