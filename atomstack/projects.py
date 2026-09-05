@@ -38,8 +38,12 @@ class ProjectStore:
         atomic_json(self.recovery,{'document':payload,'path':str(path) if path else None})
 
     def candidates(self):
-        return sorted((p for p in self.directory.glob('recovery-*.json') if p!=self.recovery),
-                      key=lambda p:p.stat().st_mtime,reverse=True)
+        found=[]
+        for path in self.directory.glob('recovery-*.json'):
+            if path==self.recovery: continue
+            try: found.append((path.stat().st_mtime,path))
+            except OSError: continue  # Another session cleared it mid-scan.
+        return [path for _,path in sorted(found,reverse=True)]
 
     def clear(self):
         self.recovery.unlink(missing_ok=True)

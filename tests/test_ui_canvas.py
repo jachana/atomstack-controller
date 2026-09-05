@@ -24,6 +24,14 @@ except ImportError:
 from atomstack.geometry import BED_X, BED_Y, Shape, shape_bounds
 from atomstack.viewport import ROTATE_HANDLE
 
+NEWLINE = chr(10)
+
+
+def dxf_document(*pairs):
+    """A DXF is (group code, value) lines; spelling them out keeps the test legible."""
+    lines = [str(part) for code, value in pairs for part in (code, value)]
+    return NEWLINE.join(lines) + NEWLINE
+
 
 def fake_event(x, y):
     """Tk delivers objects with .x/.y; the canvas code needs nothing else."""
@@ -215,6 +223,36 @@ class CanvasBehaviour(unittest.TestCase):
         self.assertAlmostEqual(after["BL"][0], before["BL"][0], places=6)
         self.assertAlmostEqual(after["BL"][1], before["BL"][1], places=6)
         self.assertEqual(editor.document.shapes[0].rotation, 30)
+
+    def test_importing_a_dxf_adds_selected_objects_at_drawing_size(self):
+        editor = self.app.geometry
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "part.dxf"
+            path.write_text(dxf_document((0, "SECTION"), (2, "ENTITIES"),
+                                        (0, "LWPOLYLINE"), (90, 4), (70, 1),
+                                        (10, 0), (20, 0), (10, 30), (20, 0),
+                                        (10, 30), (20, 20), (10, 0), (20, 20),
+                                        (0, "ENDSEC"), (0, "EOF")), encoding="utf-8")
+            with mock.patch("atomstack.ui.filedialog.askopenfilename", return_value=str(path)):
+                editor.import_dxf()
+        self.assertEqual(len(editor.document.shapes), 1)
+        self.assertEqual(shape_bounds(editor.document.shapes[0]), (0, 0, 30, 20))
+        self.assertEqual(tuple(editor.selected_indices()), (0,))
+        self.assertIn("Imported 1 vector object", editor.message.get())
+
+    def test_an_unreadable_dxf_reports_instead_of_changing_the_document(self):
+        editor = self.app.geometry
+        editor.document.shapes.append(Shape("rectangle", 1, 2, 3, 4))
+        before = tuple(editor.document.shapes)
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "blocks.dxf"
+            path.write_text(dxf_document((0, "SECTION"), (2, "ENTITIES"),
+                                        (0, "INSERT"), (10, 0), (20, 0),
+                                        (0, "ENDSEC"), (0, "EOF")), encoding="utf-8")
+            with mock.patch("atomstack.ui.filedialog.askopenfilename", return_value=str(path)):
+                editor.import_dxf()
+        self.assertEqual(tuple(editor.document.shapes), before)
+        self.assertIn("unsupported", editor.message.get())
 
     def test_text_resize_handles_match_the_nominal_editable_box(self):
         editor = self.app.geometry

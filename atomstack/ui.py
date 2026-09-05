@@ -626,6 +626,7 @@ class GeometryWindow:
         ttk.Button(header, text="New", command=self.new_design).pack(side="right", padx=4)
         file_menu = tk.Menu(self.window, tearoff=False)
         file_menu.add_command(label="Import SVG…", command=self.import_svg)
+        file_menu.add_command(label="Import DXF…", command=self.import_dxf)
         file_menu.add_command(label="Save as…", command=self.save_as)
         file_menu.add_command(label="Recent designs…", command=self.open_recent)
         file_menu.add_command(label="Recover autosave…", command=self.recover_design)
@@ -928,22 +929,34 @@ class GeometryWindow:
         choices.bind("<Double-Button-1>", lambda event: open_choice())
 
     def import_svg(self):
-        from .svg_import import import_svg
-        path = filedialog.askopenfilename(parent=self.window, title="Import SVG", filetypes=(("SVG vectors", "*.svg"),))
+        self.import_vectors("SVG", (("SVG vectors", "*.svg"),))
+
+    def import_dxf(self):
+        self.import_vectors("DXF", (("DXF drawings", "*.dxf"),))
+
+    def import_vectors(self, kind, filetypes):
+        """Both importers return bed-millimetre shapes, so the rest is shared."""
+        path = filedialog.askopenfilename(parent=self.window, title=f"Import {kind}", filetypes=filetypes)
         if not path:
             return
+        if kind == "SVG":
+            from .svg_import import import_svg as read
+            placed = "at their SVG size"
+        else:
+            from .dxf_import import import_dxf as read
+            placed = "from the drawing's lower-left corner"
         def load():
-            shapes = import_svg(Path(path))
+            shapes = read(Path(path))
             self.checkpoint()
             first = len(self.document.shapes)
             self.document.shapes.extend(shapes)
             self.set_selection(range(first, first+len(shapes)))
             self.fit_view()
-            self.refresh(f"Imported {len(shapes)} vector objects at their SVG size. Curves use 0.05 mm tolerance.")
+            self.refresh(f"Imported {len(shapes)} vector objects {placed}. Curves use 0.05 mm tolerance.")
         try:
             self.act(load)
         except OSError as exc:
-            self.message.set(f"Could not read SVG: {exc}")
+            self.message.set(f"Could not read {kind}: {exc}")
 
     def create_array(self):
         from .production import array_copies

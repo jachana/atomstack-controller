@@ -1,4 +1,6 @@
 import json
+import math
+import pathlib
 import tempfile
 from pathlib import Path
 from dataclasses import replace
@@ -8,6 +10,7 @@ from atomstack.geometry import Shape, Document, CutLayer, burn_paths, path_shape
 from atomstack.production import array_copies, offset_shape
 from atomstack.projects import ProjectStore, atomic_json
 from atomstack.svg_import import import_svg
+from atomstack.dxf_import import import_dxf
 
 
 def test_fill_preserves_hole_and_matches_preview_and_output():
@@ -75,6 +78,17 @@ def test_recovery_sessions_and_recent_files(tmp_path):
     a.remember(tmp_path/'11.atomdesign')
     assert len(a.recent())==10
     a.clear();assert not b.candidates()
+
+
+def test_recovery_scan_survives_a_file_another_session_removes(tmp_path):
+    store=ProjectStore(tmp_path);other=ProjectStore(tmp_path)
+    other.autosave({'shapes':[]},None)
+    real=pathlib.Path.stat
+    def vanishing(self,*a,**k):
+        if self==other.recovery: raise FileNotFoundError(self)
+        return real(self,*a,**k)
+    with patch('pathlib.Path.stat',vanishing):
+        assert store.candidates()==[]
 
 
 def svg(tmp_path,body,attrs='width="100mm" height="100mm" viewBox="0 0 100 100"'):
