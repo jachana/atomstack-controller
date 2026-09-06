@@ -2498,6 +2498,67 @@ class BurnTestWindow:
             self.message.set(str(exc))
 
 
+def capture_import_previews(folder, image=None):
+    """Photograph the import dialog in each mode, from the running app.
+
+    Evidence has to come from the thing being claimed. The app cannot be driven
+    from outside without sending input to whatever window happens to be in
+    front, so it takes its own picture instead, the way this project already
+    generates its preview artifacts.
+    """
+    import time
+    from PIL import Image, ImageDraw, ImageGrab
+
+    folder.mkdir(parents=True, exist_ok=True)
+    source = Path(image) if image else folder / "verify-source.png"
+    if not image:
+        drawn = Image.new("L", (320, 240), 250)
+        pen = ImageDraw.Draw(drawn)
+        pen.ellipse((60, 40, 260, 200), fill=60)
+        pen.ellipse((120, 90, 200, 150), fill=245)
+        drawn.save(source)
+
+    root = tk.Tk()
+    app = App(root, demo=True)
+    written = []
+
+    def run():
+        for mode, fields in (("outline", {"width": "80"}),
+                             ("edges", {"width": "80", "level": "0.12", "blur": "3",
+                                        "tolerance": "0.3", "min_area": "4"}),
+                             ("engrave", {"width": "80", "interval": "0.25"})):
+            window = ImageImportWindow(app.geometry, source)
+            window.mode.set(mode)
+            for name, value in fields.items():
+                window.fields[name].set(value)
+            window.trace()
+            window.window.lift()
+            window.window.attributes("-topmost", True)
+            root.update_idletasks()
+            root.update()
+            time.sleep(0.8)
+            root.update()
+            widget = window.window
+            box = (widget.winfo_rootx(), widget.winfo_rooty(),
+                   widget.winfo_rootx() + widget.winfo_width(),
+                   widget.winfo_rooty() + widget.winfo_height())
+            target = folder / f"import-{mode}.png"
+            ImageGrab.grab(bbox=box).save(target)
+            written.append((mode, str(target), window.status.get()))
+            window.window.destroy()
+            root.update()
+        root.destroy()
+
+    root.after(700, run)
+    root.mainloop()
+    (folder / "import-previews.json").write_text(
+        json.dumps([{"mode": m, "file": f, "status": s} for m, f, s in written], indent=2),
+        encoding="utf-8")
+    for mode, target, status in written:
+        print(f"{mode}: {target}")
+        print(f"  {status}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Personal Atomstack USB controller")
     parser.add_argument("--demo", action="store_true", help="Open simulator; no hardware is accessed")
@@ -2506,6 +2567,7 @@ def main():
     parser.add_argument("--open", metavar="FILE",
                         help="Open an image, drawing or design on start, as Explorer would")
     parser.add_argument("--verify-features", help=argparse.SUPPRESS)
+    parser.add_argument("--verify-images", help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.verify_features:
         report = Path(args.verify_features)
@@ -2540,6 +2602,9 @@ def main():
                                       "engraved_marks":raster_code.count(" S"),
                                       "engraving_mm":round(engraving.width, 1)}),
                           encoding="utf-8")
+        return
+    if args.verify_images:
+        capture_import_previews(Path(args.verify_images), args.open)
         return
     if args.demo and args.port:
         parser.error("--demo and --port cannot be combined")

@@ -54,18 +54,33 @@ def adjust(grey, brightness=0.0, contrast=1.0, gamma=1.0, invert=False):
     return 1.0 - out if invert else out
 
 
+def _box_pass(values, size, axis):
+    """Moving average along one axis, from a running sum.
+
+    Every output takes two lookups regardless of the radius, which is what keeps
+    a large blur on a photograph from costing more than a small one.
+    """
+    moved = np.swapaxes(values, 0, axis)
+    padding = [(size, size)] + [(0, 0)] * (moved.ndim - 1)
+    padded = np.pad(moved, padding, mode="edge")
+    running = np.cumsum(padded, axis=0)
+    leading = np.zeros((1,) + running.shape[1:], dtype=running.dtype)
+    running = np.concatenate([leading, running], axis=0)
+    window = 2 * size + 1
+    averaged = (running[window:] - running[:-window]) / window
+    return np.swapaxes(averaged, 0, axis)
+
+
 def blur(grey, radius=1.0):
-    """Separable box blur, repeated three times to approximate a Gaussian."""
+    """Box blur repeated three times, which is close enough to a Gaussian."""
     if not math.isfinite(radius) or not 0 <= radius <= 50:
         raise ValueError("Blur radius must be between 0 and 50 pixels.")
     size = int(round(radius))
     if size < 1:
         return grey
-    kernel = np.ones(2 * size + 1, dtype=np.float32) / (2 * size + 1)
-    out = grey
+    out = np.asarray(grey, dtype=np.float32)
     for _ in range(3):
-        out = np.apply_along_axis(lambda row: np.convolve(row, kernel, mode="same"), 1, out)
-        out = np.apply_along_axis(lambda col: np.convolve(col, kernel, mode="same"), 0, out)
+        out = _box_pass(_box_pass(out, size, 1), size, 0)
     return out
 
 
