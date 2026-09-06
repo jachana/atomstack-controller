@@ -1,6 +1,6 @@
 {
-  "generated": "2026-09-06T16:41:04Z",
-  "commit": "0c503f5",
+  "generated": "2026-09-06T18:29:27Z",
+  "commit": "e73f219",
   "branch": "master",
   "tree_clean": true,
   "python": "3.12.10",
@@ -9,7 +9,7 @@
     "command": "python -m pytest -q",
     "passed": 303,
     "failed": 0,
-    "summary": "303 passed in 3.86s",
+    "summary": "303 passed in 3.55s",
     "exit_code": 0
   },
   "executables": {
@@ -112,9 +112,31 @@
         "bed_setting": true
       }
     },
+    "AtomstackController-0.19.0.exe": {
+      "bytes": 38457141,
+      "sha256": "fcad1845af7f5ce5c3a73c4ae9c1b166e8799faadfe20da4ede9c194586c40bf",
+      "fixture": {
+        "checked": true,
+        "present": true,
+        "entry": "atomstack\\fixtures\\observed.txt",
+        "firmware_line": true,
+        "bed_setting": true
+      }
+    },
+    "AtomstackController-0.19.1.exe": {
+      "bytes": 38456475,
+      "sha256": "b3eaaa24cc8e1c4cca969729fe4806d1ccae0f3652a168dcab7c21b891a13193",
+      "fixture": {
+        "checked": true,
+        "present": true,
+        "entry": "atomstack\\fixtures\\observed.txt",
+        "firmware_line": true,
+        "bed_setting": true
+      }
+    },
     "AtomstackController.exe": {
-      "bytes": 38450256,
-      "sha256": "dc05bbde55d1d5faec2515cb5ea2035af74af06c3f7efe8986436e79e1440d82",
+      "bytes": 38456475,
+      "sha256": "b3eaaa24cc8e1c4cca969729fe4806d1ccae0f3652a168dcab7c21b891a13193",
       "fixture": {
         "checked": true,
         "present": true,
