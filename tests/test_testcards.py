@@ -101,14 +101,36 @@ class EngravingCard(unittest.TestCase):
 
 
 class Layout(unittest.TestCase):
-    def test_the_size_is_reported_before_the_card_is_made(self):
-        from atomstack.testcards import left_margin
+    def test_the_size_is_measured_from_the_card_it_will_make(self):
+        """Everything that gets cut counts, not just the grid of cells."""
+        from atomstack.testcards import card_bounds
         width, height = card_size(SPEEDS, POWERS, 12, 12, 3)
-        # The cells, plus the column of power labels beside them.
-        self.assertAlmostEqual(width, 3 * 15 - 3 + left_margin(12))
-        self.assertGreater(height, 4 * 15 - 3)          # room for the labels
-        self.assertTrue(fits_bed(20, 20, SPEEDS, POWERS, 12, 12, 3))
+        left, bottom, right, top = card_bounds(20, 20, SPEEDS, POWERS, 12, 12, 3)
+        self.assertAlmostEqual(width, right - left)
+        self.assertAlmostEqual(height, top - bottom)
+        # Wider than the cells alone: the labels and caption overhang the grid.
+        self.assertGreater(width, len(SPEEDS) * 15 - 3)
+        self.assertTrue(fits_bed(30, 20, SPEEDS, POWERS, 12, 12, 3))
         self.assertFalse(fits_bed(BED_X - 10, 20, SPEEDS, POWERS, 12, 12, 3))
+
+    def test_a_card_the_beam_cannot_reach_does_not_pass_the_fit_check(self):
+        """The head has to travel further right than the cut it is making."""
+        from atomstack.placement import reachable_x
+        reach = reachable_x(-12.5)
+        self.assertEqual(reach, (0, BED_X - 12.5))
+        placed = 320.0
+        # It is inside the bed, so a bed-only check accepts it.
+        self.assertTrue(fits_bed(placed, 20, [600, 2400], [300, 600], 14, 14, 4))
+        # With the beam offset it cannot be cut, and the document agrees.
+        self.assertFalse(fits_bed(placed, 20, [600, 2400], [300, 600], 14, 14, 4, reach))
+        document = Document()
+        for shape in cut_card(placed, 20, [600, 2400], [300, 600],
+                              cell_width=14, cell_height=14, gap=4):
+            document.add(shape)
+        self.assertTrue(document.offbed(reach))
+        with self.assertRaises(ValueError) as caught:
+            document.require_on_bed("sending", reach)
+        self.assertIn("cutting beam can reach", str(caught.exception))
 
     def test_the_fit_check_counts_the_labels_beside_the_grid(self):
         """The power labels hang left of the first column and are still cut."""

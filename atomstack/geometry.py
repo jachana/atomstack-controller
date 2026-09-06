@@ -301,18 +301,22 @@ class Document:
             indices.append(self.add(shape))
         return indices
 
-    def offbed(self):
-        """Enabled objects that lie off the bed, as (index, shape) pairs."""
-        return tuple((index, shape) for index, shape in self.output_shapes() if outside_bed(shape))
+    def offbed(self, reach=None):
+        """Enabled objects the beam cannot reach, as (index, shape) pairs."""
+        return tuple((index, shape) for index, shape in self.output_shapes()
+                     if outside_reach(shape, reach))
 
-    def require_on_bed(self, action):
-        off = self.offbed()
+    def require_on_bed(self, action, reach=None):
+        off = self.offbed(reach)
         if off:
+            low, high = reach if reach else (0.0, BED_X)
             names = ", ".join(str(index + 1) for index, _ in off[:4])
             more = "" if len(off) <= 4 else f" and {len(off) - 4} more"
+            where = (f"the {BED_X:g} × {BED_Y:g} mm bed" if not reach or (low, high) == (0.0, BED_X)
+                     else f"what the cutting beam can reach, X {low:g}-{high:g} mm")
             raise ValueError(
-                f"Object {names}{more} {'lies' if len(off) == 1 else 'lie'} outside the "
-                f"{BED_X:g} × {BED_Y:g} mm bed. Scale or move it in before {action}.")
+                f"Object {names}{more} {'lies' if len(off) == 1 else 'lie'} outside "
+                f"{where}. Scale or move it in before {action}.")
 
     def frame_points(self, margin=2.0):
         output = self.output_shapes()
@@ -455,6 +459,21 @@ def _cached_shape_paths(shape):
 def shape_paths(shape):
     return [list(path) for path in _cached_shape_paths(shape)]
 
+
+
+def outside_reach(shape, reach=None):
+    """True when any part of the shape lies outside what the beam can reach.
+
+    ``reach`` is the span of X the cutting beam can be placed at, which is not
+    the bed when the beam sits off to one side of the positioning mark: the head
+    has to travel further than the cut to put the beam there. Defaults to the
+    whole bed, for callers with no machine to ask.
+    """
+    low, high = reach if reach else (0.0, BED_X)
+    left, bottom, right, top = shape_bounds(shape)
+    tolerance = 1e-7
+    return (left < low - tolerance or bottom < -tolerance
+            or right > high + tolerance or top > BED_Y + tolerance)
 
 
 def outside_bed(shape):

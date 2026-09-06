@@ -1,8 +1,8 @@
-PASS: 316 tests passed, 0 failed.
-Generated 2026-09-06T19:17:12Z from commit 083338a on branch master.
-Working tree clean: yes.
+PASS: 317 tests passed, 0 failed.
+Generated 2026-09-06T19:29:30Z from commit 75d8f08 on branch master.
+Working tree clean: no.
 Python 3.12.10 on Windows-11-10.0.26200-SP0.
-pytest summary: 316 passed in 3.78s
+pytest summary: 317 passed in 3.66s
 
 Packaged executables found in the delivery folder. This script
 does not build or launch them, so these hashes identify whatever

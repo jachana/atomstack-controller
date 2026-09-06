@@ -1079,6 +1079,14 @@ class GeometryWindow:
             self.refresh(f"Added {len(copies)} array objects.")
         self.act(apply_array)
 
+    def cutting_reach(self):
+        """The X span the cutting beam can be placed at on this machine."""
+        from .placement import reachable_x
+        try:
+            return reachable_x(self.controller.beam_offset_x)
+        except ValueError:
+            return None
+
     def set_cut_order(self):
         """Ordering changes the path, so it is an edit like any other."""
         self.checkpoint()
@@ -1632,7 +1640,7 @@ class GeometryWindow:
     def add_test_card(self, card, x, y, width, height, columns, rows,
                       min_speed, max_speed, min_power, max_power, gap, passes, interval):
         """Build a cut or engraving card and place it as one undoable change."""
-        from .testcards import card_size, cut_card, engraving_card
+        from .testcards import card_size, cut_card, engraving_card, fits_bed
         if not 1 <= columns <= 10 or not 1 <= rows <= 10:
             raise ValueError("Rows and columns must be between 1 and 10.")
         steps = lambda low, high, count: [round(low + (high-low)*i/max(1, count-1))
@@ -1650,8 +1658,13 @@ class GeometryWindow:
         self.set_selection(range(first, len(self.document.shapes)))
         span = card_size(speeds, powers, width, height, gap)
         cells = columns * rows
+        note = ""
+        if not fits_bed(x, y, speeds, powers, width, height, gap, self.cutting_reach()):
+            low, high = self.cutting_reach() or (0, BED_X)
+            note = (f" It reaches past what the beam can cut (X {low:g}-{high:g} mm); "
+                    "move it in before sending.")
         self.refresh(f"Added a {card} test card: {cells} cells, "
-                     f"{span[0]:.0f} x {span[1]:.0f} mm, labelled with its speeds and powers.")
+                     f"{span[0]:.0f} x {span[1]:.0f} mm, labelled with its speeds and powers." + note)
 
     def add_burn_test_values(self, x, y, width, height, columns, rows,
                              min_speed, max_speed, min_power, max_power, gap=2, passes=1, mode="line", interval=0.2):
@@ -1705,7 +1718,7 @@ class GeometryWindow:
             self.beam_display_signature=signature
             self.draw()
         has_output = bool(self.document.output_shapes())
-        offbed = self.document.offbed() if has_output else ()
+        offbed = self.document.offbed(self.cutting_reach()) if has_output else ()
         if not has_output:
             ready, reason = False, "Enable layer output or add geometry to enable Frame."
         elif offbed:

@@ -153,17 +153,35 @@ def engraving_card(x, y, speeds, powers, image=None, cell_width=16.0, cell_heigh
     return [shape.validated() for shape in shapes]
 
 
+def card_bounds(x, y, speeds, powers, cell_width, cell_height, gap):
+    """The exact extent of a card, measured from the shapes it makes.
+
+    Derived rather than calculated, because the parts that overhang the grid —
+    the label column, and a caption wider than the cells it explains — have
+    twice been left out of a hand-written formula, each time telling the
+    operator a card fitted when it did not.
+    """
+    from .geometry import shape_bounds
+
+    shapes = cut_card(x, y, speeds, powers, cell_width, cell_height, gap)
+    boxes = [shape_bounds(shape) for shape in shapes]
+    return (min(b[0] for b in boxes), min(b[1] for b in boxes),
+            max(b[2] for b in boxes), max(b[3] for b in boxes))
+
+
 def card_size(speeds, powers, cell_width, cell_height, gap):
-    """How much bed a card takes, counting the labels on both axes."""
-    label = label_height(cell_height)
-    width = left_margin(cell_height) + len(speeds) * (cell_width + gap) - gap
-    height = len(powers) * (cell_height + gap) - gap + label * 3.5
-    return width, height
+    """How much bed a card takes, labels and caption included."""
+    left, bottom, right, top = card_bounds(0, 0, speeds, powers, cell_width, cell_height, gap)
+    return right - left, top - bottom
 
 
-def fits_bed(x, y, speeds, powers, cell_width, cell_height, gap):
-    """Whether a card placed here stays on the bed, labels and all."""
-    width, height = card_size(speeds, powers, cell_width, cell_height, gap)
-    margin = left_margin(cell_height)
-    return (x - margin >= 0 and y >= 0
-            and x - margin + width <= BED_X and y + height <= BED_Y)
+def fits_bed(x, y, speeds, powers, cell_width, cell_height, gap, reach=None):
+    """Whether a card placed here can actually be cut, every part of it.
+
+    ``reach`` is the span of X the cutting beam can be placed at. On a machine
+    whose beam sits left of the positioning mark, the right of the bed cannot be
+    cut at all, and a card that fits the bed may still be unsendable.
+    """
+    low, high = reach if reach else (0.0, BED_X)
+    left, bottom, right, top = card_bounds(x, y, speeds, powers, cell_width, cell_height, gap)
+    return left >= low and bottom >= 0 and right <= high and top <= BED_Y
