@@ -13,7 +13,7 @@ same way the SVG and DXF importers do.
 import math
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageOps
 
 from .geometry import path_shape
 
@@ -26,7 +26,10 @@ def load_grayscale(path, max_pixels=MAX_PIXELS):
     try:
         with Image.open(path) as opened:
             opened.draft("L", opened.size)  # Let JPEG decode smaller if it can.
-            picture = opened.convert("L")
+            # A photograph from a phone is usually stored in the sensor's
+            # orientation with a tag saying which way is up. Without this the
+            # outline comes out turned on its side from what the operator saw.
+            picture = ImageOps.exif_transpose(opened).convert("L")
             if picture.width * picture.height > max_pixels:
                 scale = math.sqrt(max_pixels / (picture.width * picture.height))
                 picture = picture.resize((max(1, int(picture.width * scale)),
@@ -255,3 +258,19 @@ def image_shapes(path, width_mm=100.0, mode="outline", level=None, blur_radius=0
     mask = edges(grey, 0.25 if level is None else level) if mode == "edges"         else threshold(grey, level)
     paths = outline_paths(mask, width_mm, tolerance_mm, min_area_mm)
     return [path_shape(paths, **settings)]
+
+
+def resample(grey, columns, rows):
+    """Area-average an image down to the grid it will actually be engraved on.
+
+    Sweeping at a 0.2 mm line interval resolves five points per millimetre;
+    feeding it twenty is not more detail, it is more commands describing detail
+    the beam cannot place.
+    """
+    if columns < 1 or rows < 1:
+        raise ValueError("Engraving grid must have at least one row and column.")
+    if (rows, columns) == np.asarray(grey).shape:
+        return np.asarray(grey, dtype=np.float32)
+    picture = Image.fromarray((np.clip(grey, 0, 1) * 255).astype(np.uint8), mode="L")
+    resized = picture.resize((int(columns), int(rows)), Image.BOX)
+    return np.asarray(resized, dtype=np.float32) / 255.0
