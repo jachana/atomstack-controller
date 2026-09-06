@@ -298,6 +298,17 @@ class CanvasBehaviour(unittest.TestCase):
         right = view.to_canvas(520, 0)[0]
         self.assertLessEqual(right, editor.bed.winfo_width())
 
+    def test_the_text_box_still_loads_after_a_multiple_selection(self):
+        """Selecting several objects disables it, and a disabled Text ignores edits."""
+        editor = self.app.geometry
+        editor.document.shapes.append(Shape("rectangle", 10, 10, 20, 20))
+        editor.document.shapes.append(Shape("text", 50, 10, 40, 20, text="HELLO"))
+        editor.set_selection((0, 1))
+        editor.refresh()
+        editor.set_selection((1,), 1)
+        editor.refresh()
+        self.assertEqual(editor.fields["text"].get(), "HELLO")
+
     def test_text_layout_settings_survive_selection_and_apply(self):
         editor = self.app.geometry
         original = Shape("text", 10, 10, 60, 30, text="TWO" + chr(10) + "LINES",
@@ -464,6 +475,77 @@ class CanvasBehaviour(unittest.TestCase):
             editor.undo()
             self.assertEqual(editor.document.shapes, [])
 
+    def test_selecting_one_of_a_group_selects_the_group(self):
+        editor = self.app.geometry
+        editor.document.shapes.clear()
+        for x in (10, 40, 200):
+            editor.document.shapes.append(Shape("rectangle", x, 10, 20, 20))
+        editor.set_selection((0, 1))
+        editor.group_selection()
+        self.assertEqual(len(editor.selected_indices()), 2)
+        # Picking one member brings the other with it, from any route in.
+        editor.set_selection((0,))
+        self.assertEqual(set(editor.selected_indices()), {0, 1})
+        # The ungrouped object stays out of it.
+        editor.set_selection((2,))
+        self.assertEqual(set(editor.selected_indices()), {2})
+        editor.set_selection((0,))
+        editor.ungroup_selection()
+        editor.set_selection((0,))
+        self.assertEqual(set(editor.selected_indices()), {0})
+
+    def test_grouping_needs_two_objects_and_undoes_in_one_step(self):
+        editor = self.app.geometry
+        editor.document.shapes.clear()
+        editor.document.shapes.append(Shape("rectangle", 10, 10, 20, 20))
+        editor.set_selection((0,))
+        editor.group_selection()
+        self.assertIn("two or more", editor.message.get())
+        editor.document.shapes.append(Shape("rectangle", 40, 10, 20, 20))
+        editor.set_selection((0, 1))
+        editor.group_selection()
+        self.assertTrue(all(s.group for s in editor.document.shapes))
+        editor.undo()
+        self.assertFalse(any(s.group for s in editor.document.shapes))
+
+    def test_copy_and_paste_go_through_the_system_clipboard(self):
+        editor = self.app.geometry
+        editor.document.shapes.clear()
+        editor.document.shapes.append(Shape("rectangle", 10, 20, 30, 40, speed=1234))
+        editor.set_selection((0,))
+        editor.copy_selection()
+        self.assertIn("atomstack-clipboard", editor.window.clipboard_get())
+        editor.paste_clipboard()
+        self.assertEqual(len(editor.document.shapes), 2)
+        pasted = editor.document.shapes[-1]
+        self.assertEqual((pasted.x, pasted.y), (15, 25))     # offset, not on top
+        self.assertEqual(pasted.speed, 1234)
+        editor.undo()
+        self.assertEqual(len(editor.document.shapes), 1)
+
+    def test_pasting_a_group_makes_a_new_group_not_a_bigger_one(self):
+        editor = self.app.geometry
+        editor.document.shapes.clear()
+        for x in (10, 40):
+            editor.document.shapes.append(Shape("rectangle", x, 10, 20, 20))
+        editor.set_selection((0, 1))
+        editor.group_selection()
+        original = editor.document.shapes[0].group
+        editor.copy_selection()
+        editor.paste_clipboard()
+        pasted = {s.group for s in editor.document.shapes[2:]}
+        self.assertEqual(len(pasted), 1)
+        self.assertNotIn(original, pasted)
+
+    def test_rubbish_on_the_clipboard_is_refused(self):
+        editor = self.app.geometry
+        before = len(editor.document.shapes)
+        editor.window.clipboard_clear()
+        editor.window.clipboard_append("just some text")
+        editor.paste_clipboard()
+        self.assertEqual(len(editor.document.shapes), before)
+        self.assertIn("clipboard", editor.message.get())
+
     def test_text_resize_handles_match_the_nominal_editable_box(self):
         editor = self.app.geometry
         text = Shape("text", 10, 20, 100, 30, text="I")
@@ -488,7 +570,7 @@ class CanvasBehaviour(unittest.TestCase):
             editor.design_path = save_path
             editor.save_design()
             saved = json.loads(save_path.read_text(encoding="utf-8"))
-            self.assertEqual(saved["version"], 5)
+            self.assertEqual(saved["version"], 6)
             self.assertEqual(saved["shapes"][0]["rotation"], 90)
             self.assertTrue(saved["shapes"][0]["mirror_x"])
             self.assertEqual(list(Path(folder).glob("*.tmp")), [],

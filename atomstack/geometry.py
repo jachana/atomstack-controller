@@ -31,6 +31,7 @@ class Shape:
     paths: tuple = ()
     mode: str = "line"
     interval: float = 0.2
+    group: str = ""        # Shapes sharing a name move and scale together.
     image: str = ""        # Base64 PNG of the greys to engrave, for kind "raster".
     line_spacing: float = 1.2
     letter_spacing: float = 0.0
@@ -42,6 +43,8 @@ class Shape:
     def validated(self):
         if not isinstance(self.layer, str):
             raise ValueError("Layer must be a name.")
+        if not isinstance(self.group, str) or len(self.group) > 40:
+            raise ValueError("Group must be a short name.")
         values = (self.x, self.y, self.width, self.height)
         if not all(math.isfinite(v) for v in values):
             raise ValueError("Geometry values must be finite numbers.")
@@ -249,7 +252,7 @@ class Document:
 
     def to_payload(self):
         self.validate_layers()
-        return {"format": "atomstack-design", "version": 5,
+        return {"format": "atomstack-design", "version": 6,
                 "bed": {"width": BED_X, "height": BED_Y},
                 "shapes": [shape.validated().__dict__ for shape in self.shapes],
                 "layers": [layer.__dict__ for layer in self.layers],
@@ -260,7 +263,7 @@ class Document:
         if not isinstance(data, dict) or data.get("format") != "atomstack-design" or not isinstance(data.get("shapes"), list):
             raise ValueError("This is not an Atomstack design file.")
         version = data.get("version", 1)
-        if type(version) is not int or version not in (1, 2, 3, 4, 5):
+        if type(version) is not int or version not in (1, 2, 3, 4, 5, 6):
             raise ValueError(f"Unsupported Atomstack design version: {version}.")
         document = cls()
         document.shapes = [Shape(**item).validated() for item in data["shapes"]]

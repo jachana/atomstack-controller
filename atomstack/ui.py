@@ -1,6 +1,7 @@
 """Native Windows control panel. Widgets only invoke guarded controller operations."""
 import argparse
 import json
+import uuid
 from pathlib import Path
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog, simpledialog
@@ -19,6 +20,7 @@ from .viewport import (
     anchor_point, arrow_target, clamp_to_bed, clamp_zoom, corner_handles, fit_viewport,
     handle_at as handle_hit, inside_bed, snap_value, topmost_at,
     zoom_pan_correction, ROTATE_HANDLE, resize_from_handle, rotated_handles,
+    snap_to_objects,
     rotation_from_pointer, transformed_point,
 )
 
@@ -588,8 +590,13 @@ class MultiLineField:
     def set(self, value):
         if self.get() == value:
             return
+        # A disabled Text ignores edits without complaining, and the panel loads
+        # fields before it re-enables them, so this would quietly show nothing.
+        state = str(self.widget.cget("state"))
+        self.widget.configure(state="normal")
         self.widget.delete("1.0", "end")
         self.widget.insert("1.0", value)
+        self.widget.configure(state=state)
 
     def pack(self, **options):
         self.widget.pack(**options)
@@ -723,6 +730,11 @@ class GeometryWindow:
         production.add_command(label="Array copies…", command=self.create_array)
         production.add_command(label="Offset outline…", command=self.create_offset)
         production.add_command(label="Weld selection", command=self.weld_selection)
+        production.add_separator()
+        production.add_command(label="Group  Ctrl+G", command=self.group_selection)
+        production.add_command(label="Ungroup  Ctrl+Shift+G", command=self.ungroup_selection)
+        production.add_command(label="Copy  Ctrl+C", command=self.copy_selection)
+        production.add_command(label="Paste  Ctrl+V", command=self.paste_clipboard)
         production.add_separator()
         self.optimise_order = tk.BooleanVar(value=self.document.optimise_order)
         production.add_checkbutton(label="Shorten travel within each layer",
@@ -890,6 +902,10 @@ class GeometryWindow:
         self.window.bind_all("<Control-y>", self.redo_shortcut)
         self.window.bind_all("<Control-Shift-Z>", self.redo_shortcut)
         self.window.bind_all("<Control-d>", self.duplicate_shortcut)
+        self.window.bind_all("<Control-g>", self.group_shortcut)
+        self.window.bind_all("<Control-Shift-G>", self.ungroup_shortcut)
+        self.window.bind_all("<Control-c>", self.copy_shortcut)
+        self.window.bind_all("<Control-v>", self.paste_shortcut)
         self.window.bind_all("<Delete>", self.delete_shortcut)
         self.window.bind_all("<Control-plus>", lambda event: self.zoom_shortcut(1.25))
         self.window.bind_all("<Control-equal>", lambda event: self.zoom_shortcut(1.25))
@@ -1171,6 +1187,85 @@ class GeometryWindow:
         except (ValueError, IndexError, GuardError) as exc:
             self.message.set(str(exc))
 
+    def group_members(self, indices):
+        """Everything sharing a group with the given selection.
+
+        Picking one member of a group picks the group: that is what grouping is
+        for, and it has to hold for every route into a selection, not just
+        clicking.
+        """
+        names = {self.document.shapes[i].group for i in indices
+                 if 0 <= i < len(self.document.shapes) and self.document.shapes[i].group}
+        if not names:
+            return set()
+        return {i for i, shape in enumerate(self.document.shapes) if shape.group in names}
+
+    def group_selection(self):
+        def apply():
+            indices = self.selected_indices()
+            if len(indices) < 2:
+                raise ValueError("Select two or more objects to group.")
+            name = uuid.uuid4().hex[:12]
+            self.checkpoint()
+            for index in indices:
+                self.document.update(index, group=name)
+            self.set_selection(indices)
+            self.refresh(f"Grouped {len(indices)} objects.")
+        self.act(apply)
+
+    def ungroup_selection(self):
+        def apply():
+            indices = [i for i in self.selected_indices() if self.document.shapes[i].group]
+            if not indices:
+                raise ValueError("Select a group to ungroup.")
+            self.checkpoint()
+            for index in indices:
+                self.document.update(index, group="")
+            self.set_selection(indices)
+            self.refresh(f"Ungrouped {len(indices)} objects.")
+        self.act(apply)
+
+    def copy_selection(self, event=None):
+        """Put the selection on the system clipboard, so it survives the app."""
+        indices = self.selected_indices()
+        if not indices:
+            self.message.set("Select something to copy.")
+            return "break"
+        payload = {"format": "atomstack-clipboard", "version": 1,
+                   "shapes": [self.document.shapes[i].__dict__ for i in indices]}
+        self.window.clipboard_clear()
+        self.window.clipboard_append(json.dumps(payload))
+        self.message.set(f"Copied {len(indices)} objects.")
+        return "break"
+
+    def paste_clipboard(self, event=None):
+        def paste():
+            try:
+                payload = json.loads(self.window.clipboard_get())
+            except (tk.TclError, ValueError):
+                raise ValueError("The clipboard does not hold copied objects.")
+            if not isinstance(payload, dict) or payload.get("format") != "atomstack-clipboard":
+                raise ValueError("The clipboard does not hold copied objects.")
+            # A fresh group name, so pasting a group does not join the original.
+            renamed = {}
+            shapes = []
+            for item in payload.get("shapes", []):
+                shape = Shape(**item)
+                if shape.group:
+                    shape = replace(shape, group=renamed.setdefault(shape.group,
+                                                                    uuid.uuid4().hex[:12]))
+                shapes.append(replace(shape, x=shape.x + 5, y=shape.y + 5).validated())
+            if not shapes:
+                raise ValueError("The clipboard does not hold copied objects.")
+            self.checkpoint()
+            first = len(self.document.shapes)
+            for shape in shapes:
+                self.document.add(shape)
+            self.set_selection(range(first, len(self.document.shapes)))
+            self.refresh(f"Pasted {len(shapes)} objects.")
+        self.act(paste)
+        return "break"
+
     def selected_indices(self):
         valid = {index for index in self.selection if 0 <= index < len(self.document.shapes)}
         if self.selected is not None and 0 <= self.selected < len(self.document.shapes):
@@ -1183,6 +1278,7 @@ class GeometryWindow:
 
     def set_selection(self, indices, primary=None):
         self.selection = {index for index in indices if 0 <= index < len(self.document.shapes)}
+        self.selection |= self.group_members(self.selection)
         if primary in self.selection:
             self.selected = primary
         else:
@@ -1255,6 +1351,24 @@ class GeometryWindow:
         if self.design_shortcut_allowed(event):
             self.redo()
             return "break"
+
+    def group_shortcut(self, event=None):
+        if self.design_shortcut_allowed(event):
+            self.group_selection()
+            return "break"
+
+    def ungroup_shortcut(self, event=None):
+        if self.design_shortcut_allowed(event):
+            self.ungroup_selection()
+            return "break"
+
+    def copy_shortcut(self, event=None):
+        if self.design_shortcut_allowed(event):
+            return self.copy_selection()
+
+    def paste_shortcut(self, event=None):
+        if self.design_shortcut_allowed(event):
+            return self.paste_clipboard()
 
     def duplicate_shortcut(self, event=None):
         if self.design_shortcut_allowed(event):
@@ -1984,6 +2098,15 @@ class GeometryWindow:
                 if self.snap_enabled.get():
                     dx = self.snap(original.x+dx)-original.x
                     dy = self.snap(original.y+dy)-original.y
+                    # Then let nearby objects win over the grid: lining up with
+                    # the work already placed is what is usually meant.
+                    moved = (left+dx, bottom+dy, right+dx, top+dy)
+                    others = [shape_bounds(shape) for index, shape in enumerate(self.document.shapes)
+                              if index not in self.interaction["shapes"]]
+                    ox, oy, guides = snap_to_objects(moved, others,
+                                                     self.transform().millimetres(6))
+                    dx, dy = dx + ox, dy + oy
+                    self.snap_guides = guides
                     if right - left <= BED_X:
                         dx = max(-left, min(BED_X-right, dx))
                     if top - bottom <= BED_Y:
@@ -2037,6 +2160,7 @@ class GeometryWindow:
         if self.interaction and self.interaction.get("mode") in ("move", "resize", "rotate"):
             changed = self.interaction.get("changed")
             self.interaction = None
+            self.snap_guides = ()
             self.refresh("Object updated." if changed else "Object selected.")
             return
         if not self.drag_start:
@@ -2141,6 +2265,14 @@ class GeometryWindow:
                 self.bed.create_text(cx,cy-12,text=label,fill=color,tags=("beam-position",))
         selected_indices = set(self.selected_indices())
         self.raster_images = []          # Tk drops an image it holds no reference to.
+        for axis, position in getattr(self, "snap_guides", ()):
+            # Show what a drag lined up with, or the object appears to stick.
+            if axis == 0:
+                self.bed.create_line(x0+position*scale, y0, x0+position*scale, y1,
+                                     fill="#d66a1f", dash=(2, 3), tags=("snap-guide",))
+            else:
+                self.bed.create_line(x0, y0-position*scale, x1, y0-position*scale,
+                                     fill="#d66a1f", dash=(2, 3), tags=("snap-guide",))
         for index, shape in enumerate(self.document.shapes):
             if shape.kind == "raster":
                 self.draw_raster(shape, x0, y0, scale)

@@ -255,3 +255,34 @@ def proportional_size(old_width, old_height, width, height):
         raise ValueError("Keep ratio is on: edit only width or height, or turn it off.")
     factor = height/old_height if changed_h and not changed_w else width/old_width
     return old_width*factor, old_height*factor
+
+
+SNAP_EDGES = ("left", "centre", "right")
+
+
+def _edges(bounds):
+    left, bottom, right, top = bounds
+    return ((left, (left + right) / 2, right), (bottom, (bottom + top) / 2, top))
+
+
+def snap_to_objects(moving, others, tolerance):
+    """Nudge a moving box so its edges or centres line up with nearby ones.
+
+    Returns ``(dx, dy, guides)``: the adjustment, and the x and y positions that
+    were matched, so the interface can draw the line it snapped to. Grid snapping
+    answers to the bed; this answers to the work already placed on it.
+    """
+    if tolerance <= 0 or not others:
+        return 0.0, 0.0, ()
+    moving_x, moving_y = _edges(moving)
+    best = [(tolerance, 0.0, None), (tolerance, 0.0, None)]
+    for other in others:
+        other_x, other_y = _edges(other)
+        for axis, (mine, theirs) in enumerate(((moving_x, other_x), (moving_y, other_y))):
+            for value in mine:
+                for target in theirs:
+                    distance = abs(target - value)
+                    if distance < best[axis][0]:
+                        best[axis] = (distance, target - value, target)
+    return best[0][1], best[1][1], tuple(
+        (axis, position) for axis, (_, _, position) in enumerate(best) if position is not None)

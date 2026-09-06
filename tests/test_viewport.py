@@ -10,7 +10,7 @@ from atomstack.geometry import BED_X, BED_Y
 from atomstack.viewport import (
     anchor_point, arrow_target, clamp_to_bed, clamp_zoom, corner_handles,
     fit_viewport, handle_at, inside_bed, snap_value, topmost_at, within_bounds,
-    zoom_pan_correction, OPPOSITE, ROTATE_HANDLE, resize_from_handle,
+    zoom_pan_correction, OPPOSITE, ROTATE_HANDLE, resize_from_handle, snap_to_objects,
     rotated_handles, rotation_from_pointer,
 )
 
@@ -281,3 +281,36 @@ class RotatedHandleMath(unittest.TestCase):
         self.assertAlmostEqual(rotation_from_pointer((72.0, 90.0), self.BOX, step=15), 0.0)
         self.assertAlmostEqual(rotation_from_pointer(centre_right, self.BOX, mirror_y=True), 90.0)
         self.assertEqual(rotation_from_pointer((70.0, 40.0), self.BOX), 0.0)
+
+
+class SnappingToObjects(unittest.TestCase):
+    """Lining up with work already on the bed, rather than with the grid."""
+
+    def test_a_near_edge_pulls_the_box_into_line(self):
+        moving = (10.0, 10.0, 30.0, 20.0)
+        other = (31.0, 60.0, 51.0, 70.0)          # its left edge is 1 mm away
+        dx, dy, guides = snap_to_objects(moving, [other], tolerance=3.0)
+        self.assertAlmostEqual(dx, 1.0)
+        self.assertIn((0, 31.0), guides)
+
+    def test_centres_line_up_as_well_as_edges(self):
+        moving = (0.0, 0.0, 10.0, 10.0)           # centre at 5
+        # Its edges are too far to match; only the centres are within reach.
+        other = (20.0, 2.4, 30.0, 8.4)            # centre at 5.4
+        _, dy, _ = snap_to_objects(moving, [other], tolerance=1.0)
+        self.assertAlmostEqual(dy, 0.4)
+
+    def test_nothing_within_reach_leaves_the_box_alone(self):
+        moving = (0.0, 0.0, 10.0, 10.0)
+        far = (200.0, 200.0, 210.0, 210.0)
+        self.assertEqual(snap_to_objects(moving, [far], tolerance=2.0), (0.0, 0.0, ()))
+        self.assertEqual(snap_to_objects(moving, [], tolerance=2.0), (0.0, 0.0, ()))
+        self.assertEqual(snap_to_objects(moving, [(0.0, 0.0, 1.0, 1.0)], tolerance=0.0),
+                         (0.0, 0.0, ()))
+
+    def test_the_closest_candidate_wins(self):
+        moving = (10.0, 0.0, 20.0, 10.0)
+        near = (12.0, 40.0, 22.0, 50.0)           # 2 mm away
+        nearer = (10.5, 60.0, 20.5, 70.0)         # half a millimetre away
+        dx, _, _ = snap_to_objects(moving, [near, nearer], tolerance=3.0)
+        self.assertAlmostEqual(dx, 0.5)
