@@ -129,7 +129,7 @@ class App:
         self.ports.pack(side="left")
         self.refresh_btn = ttk.Button(connect, text="Refresh ports", command=self.refresh)
         self.refresh_btn.pack(side="left", padx=6)
-        self.connect_btn = ttk.Button(connect, text="Connect USB", command=self.connect)
+        self.connect_btn = ttk.Button(connect, text="Connect & home", command=self.connect)
         self.connect_btn.pack(side="left")
         self.demo_btn = ttk.Button(connect, text="Open simulator", command=self.simulate)
         self.demo_btn.pack(side="right")
@@ -399,7 +399,7 @@ class App:
         machine = c.status.machine if c.status else None
         self.machine_xy.set(f"Machine X {machine[0]:.3f}   Y {machine[1]:.3f}" if machine else "Machine X —   Y —")
         self.origin_xy.set(f"Home reference: X {c.origin[0]:.3f}   Y {c.origin[1]:.3f}" if c.origin else "Home reference not captured")
-        self.connect_btn.configure(text="Disconnect" if c.connected else "Connect USB")
+        self.connect_btn.configure(text="Disconnect" if c.connected else "Connect & home")
         self.enabled(self.demo_btn, not c.connected)
         self.enabled(self.refresh_btn, not c.connected)
         self.ports.configure(state="disabled" if c.connected else "readonly")
@@ -691,6 +691,7 @@ class GeometryWindow:
             ttk.Entry(toolbar, textvariable=self.fields[name], width=5).pack(side="left")
         ttk.Button(toolbar, text="Apply", command=self.apply).pack(side="left", padx=5)
 
+        ttk.Button(toolbar, text="Place job…", command=self.open_placement).pack(side="left", padx=3)
         view_bar = ttk.Frame(outer)
         view_bar.pack(fill="x", pady=(0, 4))
         ttk.Button(view_bar, text="Zoom in", command=lambda: self.zoom_by(1.25)).pack(side="left")
@@ -1515,6 +1516,44 @@ class GeometryWindow:
     def open_burn_test(self):
         BurnTestWindow(self)
 
+    def open_placement(self):
+        from .placement import ANCHORS, place_shapes
+        window = tk.Toplevel(self.window)
+        window.title("Place job")
+        window.transient(self.window.winfo_toplevel())
+        panel = ttk.Frame(window, padding=18); panel.pack(fill="both", expand=True)
+        ttk.Label(panel, text="Place enabled output on the material", style="Section.TLabel").pack(anchor="w")
+        ttk.Label(panel, text="Moves all enabled objects together. Undo restores their position.\nCoordinates refer to the positioning mark; cutting includes beam alignment.", wraplength=430).pack(anchor="w", pady=8)
+        anchor = tk.StringVar(value="Bottom-left")
+        ttk.Combobox(panel, textvariable=anchor, values=tuple(ANCHORS), state="readonly").pack(fill="x", pady=4)
+        x, y = tk.StringVar(value="20"), tk.StringVar(value="20")
+        for label, value in (("Target X · mm", x), ("Target Y · mm", y)):
+            row=ttk.Frame(panel); row.pack(fill="x", pady=4)
+            ttk.Label(row,text=label).pack(side="left")
+            ttk.Entry(row,textvariable=value,width=12).pack(side="right")
+        feedback=tk.StringVar(value="Placement changes the design only; no machine movement.")
+        ttk.Label(panel,textvariable=feedback,wraplength=430).pack(anchor="w",pady=8)
+        def current():
+            try:
+                self.controller._guard(require_home=True, allow_status_poll=True)
+                position=self.controller.app_position
+                x.set(f"{position[0]:.3f}"); y.set(f"{position[1]:.3f}")
+            except GuardError as exc: feedback.set(str(exc))
+        def apply():
+            try:
+                output=self.document.output_shapes()
+                originals=[self.document.shapes[i] for i,_ in output]
+                placed=place_shapes(originals,anchor.get(),(float(x.get()),float(y.get())),self.controller.beam_offset_x)
+                self.checkpoint()
+                for (index,_),shape in zip(output,placed): self.document.shapes[index]=shape
+                self.set_selection([i for i,_ in output],output[0][0])
+                self.refresh("Job placed. Preview and Frame before cutting.")
+                window.destroy()
+            except (ValueError, GuardError) as exc: feedback.set(str(exc))
+        ttk.Button(panel,text="Use current positioning mark",command=current).pack(fill="x",pady=4)
+        ttk.Button(panel,text="Place job",command=apply).pack(fill="x",pady=4)
+        return window
+
     def open_preview(self):
         def open_window():
             self.invalidate_preview()
@@ -1568,6 +1607,10 @@ class GeometryWindow:
     def update_frame_controls(self):
         position = self.controller.app_position
         self.move_position.set(f"X {position[0]:.3f}   Y {position[1]:.3f}" if position else "Home required")
+        signature=(position,self.controller.beam_offset_x)
+        if signature != getattr(self,"beam_display_signature",None) and not self.interaction and not self.drag_start:
+            self.beam_display_signature=signature
+            self.draw()
         has_output = bool(self.document.output_shapes())
         offbed = self.document.offbed() if has_output else ()
         if not has_output:
@@ -1943,6 +1986,19 @@ class GeometryWindow:
                 self.bed.create_text(max(18, x0-8), py, text=str(value), anchor="e", fill="#405864", font=("Segoe UI", 8))
         self.bed.create_text(x0, y0 + 13, text="0, 0", anchor="w", fill="#405864", font=("Segoe UI", 9))
         self.bed.create_text(x1, y0 + 13, text="mm", anchor="e", fill="#405864", font=("Segoe UI", 9))
+        from .placement import reachable_x
+        low, high = reachable_x(self.controller.beam_offset_x)
+        for left, right in ((0, low), (high, BED_X)):
+            if right > left:
+                self.bed.create_rectangle(x0+left*scale,y1,x0+right*scale,y0,fill="#ffe4d6",stipple="gray50",outline="#c87948",tags=("unreachable",))
+        if high < BED_X or low > 0:
+            self.bed.create_text(x0+8,y1+12,anchor="w",text=f"Cutting reach X {low:g}–{high:g} mm · shaded strip unreachable",fill="#94431f",tags=("reach-label",))
+        position=self.controller.app_position
+        if position:
+            for px, color, label in ((position[0], "#1464d2", "Mark"), (position[0]+self.controller.beam_offset_x, "#c04422", "Cut")):
+                cx,cy=x0+px*scale,y0-position[1]*scale
+                self.bed.create_oval(cx-4,cy-4,cx+4,cy+4,outline=color,width=2,tags=("beam-position",))
+                self.bed.create_text(cx,cy-12,text=label,fill=color,tags=("beam-position",))
         selected_indices = set(self.selected_indices())
         for index, shape in enumerate(self.document.shapes):
             layer = next((l for l in self.document.layers if l.name == shape.layer), None)

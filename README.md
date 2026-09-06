@@ -351,3 +351,18 @@ layout reference. The right dock holds Objects, Cut layers, and Move tabs plus
 fixed job controls and materials. Move uses the same guarded home/confirm/jog
 commands; the full keyboard and mouse navigator remains in Machine & Jog.
 The interface is an implemented subset, not complete LightBurn feature parity.
+
+## Placement 0.16
+
+Connect & home explicitly starts the configured automatic homing cycle after
+controller checks. The cycle endpoint supplies app zero. Physical orientation
+and the approximate beam offset still require supervised verification.
+
+Place job moves all enabled objects together using nine bounding-box anchors
+and a target in positioning-mark coordinates. Use current positioning mark
+requires a fresh guarded position. Placement changes geometry and is undoable
+and saved with the project; it does not move the machine. Disabled output is
+left in place. Offset-aware travel checks reject unreachable placements.
+The canvas shades the unreachable X strip and displays Mark/Cut positions
+when homed. This release also includes the intervening DXF, text layout, rotated
+handles, off-bed editing, and welding commits.
