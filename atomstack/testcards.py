@@ -16,6 +16,10 @@ from .geometry import BED_X, BED_Y, Shape
 MAX_STEPS = 10
 LABEL_HEIGHT = 3.5          # Millimetres; smaller than this stops being legible.
 CHARACTER_WIDTH = 0.62      # Of the label height, near enough for layout.
+# The power labels sit to the left of the first column, so a card occupies this
+# much more bed than its cells do. Leaving it out of the fit check told the
+# operator a card fitted and then refused to send it.
+LEFT_MARGIN = LABEL_HEIGHT * CHARACTER_WIDTH * 4.5
 
 
 def _label(text, x, y, height, speed, power, font="Arial"):
@@ -47,7 +51,7 @@ def _grid_labels(x, y, speeds, powers, cell_width, cell_height, gap,
                              top + LABEL_HEIGHT, LABEL_HEIGHT,
                              label_speed, label_power, font))
     for row, power in enumerate(powers):
-        shapes.append(_label(f"{int(power)}", x - LABEL_HEIGHT * CHARACTER_WIDTH * 4.5,
+        shapes.append(_label(f"{int(power)}", x - LEFT_MARGIN,
                              y + row * (cell_height + gap) + cell_height / 2,
                              LABEL_HEIGHT, label_speed, label_power, font))
     shapes.append(_label("mm/min across   power down", x,
@@ -125,12 +129,14 @@ def engraving_card(x, y, speeds, powers, image=None, cell_width=16.0, cell_heigh
 
 
 def card_size(speeds, powers, cell_width, cell_height, gap):
-    """How much bed a card will take, labels included."""
-    width = len(speeds) * (cell_width + gap) - gap
+    """How much bed a card takes, counting the labels on both axes."""
+    width = LEFT_MARGIN + len(speeds) * (cell_width + gap) - gap
     height = len(powers) * (cell_height + gap) - gap + LABEL_HEIGHT * 5
     return width, height
 
 
 def fits_bed(x, y, speeds, powers, cell_width, cell_height, gap):
+    """Whether a card placed here stays on the bed, labels and all."""
     width, height = card_size(speeds, powers, cell_width, cell_height, gap)
-    return (x >= 0 and y >= 0 and x + width <= BED_X and y + height <= BED_Y)
+    return (x - LEFT_MARGIN >= 0 and y >= 0
+            and x - LEFT_MARGIN + width <= BED_X and y + height <= BED_Y)

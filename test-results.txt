@@ -1,8 +1,8 @@
-PASS: 303 tests passed, 0 failed.
-Generated 2026-09-06T18:29:27Z from commit e73f219 on branch master.
-Working tree clean: yes.
+PASS: 316 tests passed, 0 failed.
+Generated 2026-09-06T19:13:25Z from commit e983a92 on branch master.
+Working tree clean: no.
 Python 3.12.10 on Windows-11-10.0.26200-SP0.
-pytest summary: 303 passed in 3.55s
+pytest summary: 316 passed in 3.36s
 
 Packaged executables found in the delivery folder. This script
 does not build or launch them, so these hashes identify whatever
@@ -29,7 +29,9 @@ is on disk and do NOT prove it was built from the commit above:
     fixture bundle: observed.txt present, V1.055 and $130=365.000 intact
   AtomstackController-0.19.1.exe  38456475 bytes  sha256 b3eaaa24cc8e1c4cca969729fe4806d1ccae0f3652a168dcab7c21b891a13193
     fixture bundle: observed.txt present, V1.055 and $130=365.000 intact
-  AtomstackController.exe  38456475 bytes  sha256 b3eaaa24cc8e1c4cca969729fe4806d1ccae0f3652a168dcab7c21b891a13193
+  AtomstackController-0.20.0.exe  38464542 bytes  sha256 9b67e9d2de7128e7f5a2301807f28cbd10bec9c7f819272e4ee24c1ef32cc272
+    fixture bundle: observed.txt present, V1.055 and $130=365.000 intact
+  AtomstackController.exe  38464542 bytes  sha256 9b67e9d2de7128e7f5a2301807f28cbd10bec9c7f819272e4ee24c1ef32cc272
     fixture bundle: observed.txt present, V1.055 and $130=365.000 intact
 
 No serial port was opened. This script never homes, jogs, frames or fires.
