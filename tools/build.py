@@ -29,6 +29,9 @@ sys.path.insert(0, str(ROOT))
 from atomstack import __version__
 
 FIXTURE = "atomstack/fixtures/observed.txt"
+# Permissive licences still require their notices to travel with a binary,
+# and a one-file build has nowhere else to carry them.
+NOTICES = "THIRD-PARTY-NOTICES.md"
 
 
 def run(command, **kwargs):
@@ -71,6 +74,7 @@ def main():
         "--onefile", "--windowed",
         "--name", name,
         "--add-data", f"{FIXTURE}{separator}atomstack/fixtures",
+        "--add-data", f"{NOTICES}{separator}.",
         "main.py",
     ]
     if run(command).returncode != 0:

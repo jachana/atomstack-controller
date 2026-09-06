@@ -1,6 +1,7 @@
 """Native Windows control panel. Widgets only invoke guarded controller operations."""
 import argparse
 import json
+import sys
 import math
 import uuid
 from pathlib import Path
@@ -2978,6 +2979,8 @@ def main():
     parser.add_argument("--report", help="Write a live JSON diagnostic snapshot to this file")
     parser.add_argument("--open", metavar="FILE",
                         help="Open an image, drawing or design on start, as Explorer would")
+    parser.add_argument("--licenses", action="store_true",
+                        help="Print the third-party notices carried by this build")
     parser.add_argument("--verify-features", help=argparse.SUPPRESS)
     parser.add_argument("--verify-images", help=argparse.SUPPRESS)
     args = parser.parse_args()
@@ -3014,6 +3017,17 @@ def main():
                                       "engraved_marks":raster_code.count(" S"),
                                       "engraving_mm":round(engraving.width, 1)}),
                           encoding="utf-8")
+        return
+    if args.licenses:
+        # The notices have to reach whoever has the executable, and a one-file
+        # build has nowhere to put a text file, so it prints its own copy.
+        bundled = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent))
+        for candidate in (bundled / "THIRD-PARTY-NOTICES.md",
+                          Path(__file__).resolve().parent.parent / "THIRD-PARTY-NOTICES.md"):
+            if candidate.exists():
+                print(candidate.read_text(encoding="utf-8"))
+                return
+        print("Third-party notices are missing from this build.")
         return
     if args.verify_images:
         capture_import_previews(Path(args.verify_images), args.open)

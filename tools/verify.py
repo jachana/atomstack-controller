@@ -94,9 +94,20 @@ def executables():
     return found
 
 
+def notices_current():
+    """Whether THIRD-PARTY-NOTICES.md still matches what is installed.
+
+    A stale notice is worse than no notice: it claims to describe what shipped.
+    """
+    result = run([sys.executable, "tools/notices.py", "--check"])
+    return result.returncode == 0, (result.stdout or "").strip().splitlines()[-1:] or [""]
+
+
 def build_report():
     tests = run_tests()
+    current, note = notices_current()
     return {
+        "notices": "current" if current else "OUT OF DATE - run python tools/notices.py",
         "generated": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "commit": git("rev-parse", "--short", "HEAD"),
         "branch": git("rev-parse", "--abbrev-ref", "HEAD"),
@@ -121,6 +132,7 @@ def render(report):
         f"Generated {report['generated']} from commit {report['commit']} "
         f"on branch {report['branch']}.",
         f"Working tree clean: {'yes' if report['tree_clean'] else 'no'}.",
+        f"Third-party notices: {report['notices']}.",
         f"Python {report['python']} on {report['platform']}.",
         f"pytest summary: {tests['summary']}",
         "",
