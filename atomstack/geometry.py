@@ -32,6 +32,7 @@ class Shape:
     mode: str = "line"
     interval: float = 0.2
     group: str = ""        # Shapes sharing a name move and scale together.
+    locked: bool = False   # Locked objects are not picked up by a click or a drag.
     corner: float = 0.0    # Corner radius for a rounded rectangle; point depth for a star.
     sides: int = 0         # Vertices of a polygon, or points of a star.
     image: str = ""        # Base64 PNG of the greys to engrave, for kind "raster".
@@ -104,6 +105,8 @@ class Shape:
             raise ValueError("Rotation must be a finite angle.")
         if not isinstance(self.mirror_x, bool) or not isinstance(self.mirror_y, bool):
             raise ValueError("Mirror values must be true or false.")
+        if type(self.locked) is not bool:
+            raise ValueError("Locked must be true or false.")
         return self
 
     @property
@@ -262,7 +265,7 @@ class Document:
 
     def to_payload(self):
         self.validate_layers()
-        return {"format": "atomstack-design", "version": 7,
+        return {"format": "atomstack-design", "version": 8,
                 "bed": {"width": BED_X, "height": BED_Y},
                 "shapes": [shape.validated().__dict__ for shape in self.shapes],
                 "layers": [layer.__dict__ for layer in self.layers],
@@ -273,7 +276,7 @@ class Document:
         if not isinstance(data, dict) or data.get("format") != "atomstack-design" or not isinstance(data.get("shapes"), list):
             raise ValueError("This is not an Atomstack design file.")
         version = data.get("version", 1)
-        if type(version) is not int or version not in (1, 2, 3, 4, 5, 6, 7):
+        if type(version) is not int or version not in (1, 2, 3, 4, 5, 6, 7, 8):
             raise ValueError(f"Unsupported Atomstack design version: {version}.")
         document = cls()
         document.shapes = [Shape(**item).validated() for item in data["shapes"]]

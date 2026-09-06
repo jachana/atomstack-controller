@@ -1,6 +1,7 @@
 """Native Windows control panel. Widgets only invoke guarded controller operations."""
 import argparse
 import json
+import math
 import uuid
 from pathlib import Path
 import tkinter as tk
@@ -9,6 +10,7 @@ from tkinter import ttk, messagebox, filedialog, simpledialog
 from .controller import Controller, GuardError, JOG_FEEDS
 from . import __version__
 from .diagnostics import Reporter
+from .expressions import evaluate
 from .projects import ProjectStore, atomic_json
 from dataclasses import replace
 from .protocol import READ_COMMANDS
@@ -735,6 +737,9 @@ class GeometryWindow:
         production.add_separator()
         production.add_command(label="Group  Ctrl+G", command=self.group_selection)
         production.add_command(label="Ungroup  Ctrl+Shift+G", command=self.ungroup_selection)
+        production.add_command(label="Select all  Ctrl+A", command=self.select_all)
+        production.add_command(label="Lock / unlock  Ctrl+L", command=self.toggle_lock)
+        production.add_command(label="Zoom to selection  Ctrl+E", command=self.zoom_to_selection)
         production.add_command(label="Copy  Ctrl+C", command=self.copy_selection)
         production.add_command(label="Paste  Ctrl+V", command=self.paste_clipboard)
         production.add_separator()
@@ -908,6 +913,10 @@ class GeometryWindow:
         self.window.bind_all("<Control-d>", self.duplicate_shortcut)
         self.window.bind_all("<Control-g>", self.group_shortcut)
         self.window.bind_all("<Control-Shift-G>", self.ungroup_shortcut)
+        self.window.bind_all("<Control-a>", self.select_all)
+        self.window.bind_all("<Control-Shift-A>", self.deselect_all)
+        self.window.bind_all("<Control-l>", lambda event: self.toggle_lock())
+        self.window.bind_all("<Control-e>", self.zoom_to_selection)
         self.window.bind_all("<Control-c>", self.copy_shortcut)
         self.window.bind_all("<Control-v>", self.paste_shortcut)
         self.window.bind_all("<Delete>", self.delete_shortcut)
@@ -923,6 +932,9 @@ class GeometryWindow:
         self.layer_window = LayerWindow(self, parent=self.layer_panel)
         self.refresh_frame_controls()
         self.window.after(10000, self.autosave_tick)
+        self.window.after(30000, self.save_session_tick)
+        self.session_path = ProjectStore().directory / "session.json"
+        self.restore_session()
         from .dropfiles import enable as enable_drops
         self.drops_enabled = enable_drops(self.window, self.accept_dropped)
         self.window.after(1200, self.offer_recovery)
@@ -934,6 +946,13 @@ class GeometryWindow:
         name = self.design_path.name if self.design_path else "Untitled"
         if len(name)>20: name=name[:17]+"…"
         self.document_status.set(name + (" · unsaved changes" if self.dirty() else " · saved"))
+
+    def save_session_tick(self):
+        """Record where the window is, occasionally, so a crash still remembers."""
+        if not self.window.winfo_exists():
+            return
+        self.remember_session()
+        self.window.after(30000, self.save_session_tick)
 
     def autosave_tick(self):
         if not self.window.winfo_exists():
@@ -1036,9 +1055,9 @@ class GeometryWindow:
         self.window.focus_force()
 
     def import_image(self):
-        path = filedialog.askopenfilename(
-            parent=self.window, title="Import image",
-            filetypes=(("Images", "*.png *.jpg *.jpeg *.bmp *.gif *.webp *.tif *.tiff"),))
+        path = self.ask_open(title="Import image",
+                             filetypes=(("Images",
+                                         "*.png *.jpg *.jpeg *.bmp *.gif *.webp *.tif *.tiff"),))
         if path:
             ImageImportWindow(self, Path(path))
 
@@ -1056,8 +1075,7 @@ class GeometryWindow:
 
         ``path`` skips the dialog, for a file that arrived by being dropped.
         """
-        path = path or filedialog.askopenfilename(parent=self.window,
-                                                  title=f"Import {kind}", filetypes=filetypes)
+        path = path or self.ask_open(title=f"Import {kind}", filetypes=filetypes)
         if not path:
             return
         if kind == "SVG":
@@ -1172,15 +1190,15 @@ class GeometryWindow:
     def values(self, kind=None):
         fallback = self.document.shapes[self.selected].kind if self.selected is not None else "rectangle"
         return Shape(kind or (self.tool.get() if self.tool.get() != "select" else fallback),
-                     float(self.fields["x"].get()), float(self.fields["y"].get()),
-                     float(self.fields["width"].get()), float(self.fields["height"].get()),
-                     int(self.fields["speed"].get()), int(self.fields["power"].get()), int(self.fields["passes"].get()),
+                     evaluate(self.fields["x"].get()), evaluate(self.fields["y"].get()),
+                     evaluate(self.fields["width"].get()), evaluate(self.fields["height"].get()),
+                     int(evaluate(self.fields["speed"].get())), int(evaluate(self.fields["power"].get())), int(evaluate(self.fields["passes"].get())),
                      self.fields["text"].get(), self.font_family.get(),
-                     rotation=float(self.fields["rotation"].get()),
-                     corner=float(self.fields["corner"].get()),
-                     sides=int(float(self.fields["sides"].get())),
-                     line_spacing=float(self.fields["line_spacing"].get()),
-                     letter_spacing=float(self.fields["letter_spacing"].get()),
+                     rotation=evaluate(self.fields["rotation"].get()),
+                     corner=evaluate(self.fields["corner"].get()),
+                     sides=int(evaluate(self.fields["sides"].get())),
+                     line_spacing=evaluate(self.fields["line_spacing"].get()),
+                     letter_spacing=evaluate(self.fields["letter_spacing"].get()),
                      text_align=self.text_align.get(),
                      mirror_x=self.mirror_x.get(), mirror_y=self.mirror_y.get(),
                      paths=self.document.shapes[self.selected].paths if self.selected is not None else (),
@@ -1200,6 +1218,110 @@ class GeometryWindow:
         self.measure_from = None
         self.measure_line = None
         self.draw()
+
+    def restore_session(self):
+        """Put the window back where it was, and start in the last folder used."""
+        self.last_folder = ""
+        try:
+            saved = json.loads(self.session_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return
+        folder = saved.get("folder")
+        if isinstance(folder, str) and Path(folder).is_dir():
+            self.last_folder = folder
+        placement = saved.get("window")
+        if isinstance(placement, str) and placement:
+            try:
+                # Only if it lands on a screen that still exists.
+                top = self.window.winfo_toplevel()
+                top.geometry(placement)
+                top.update_idletasks()
+                if top.winfo_rootx() < -200 or top.winfo_rooty() < -200:
+                    top.geometry("")
+            except tk.TclError:
+                pass
+
+    def remember_session(self, folder=None):
+        if folder:
+            self.last_folder = str(Path(folder).parent)
+        try:
+            top = self.window.winfo_toplevel()
+            atomic_json(self.session_path,
+                        {"folder": self.last_folder, "window": top.geometry()})
+        except (OSError, ValueError, tk.TclError):
+            pass  # Remembering where the window was is never worth an error.
+
+    def ask_open(self, **options):
+        """A file dialog that starts where the last one finished."""
+        if self.last_folder:
+            options.setdefault("initialdir", self.last_folder)
+        path = filedialog.askopenfilename(parent=self.window, **options)
+        if path:
+            self.remember_session(path)
+        return path
+
+    def ask_save(self, **options):
+        if self.last_folder:
+            options.setdefault("initialdir", self.last_folder)
+        path = filedialog.asksaveasfilename(parent=self.window, **options)
+        if path:
+            self.remember_session(path)
+        return path
+
+    def select_all(self, event=None):
+        if self.design_shortcut_allowed(event) is False:
+            return
+        pickable = [i for i, shape in enumerate(self.document.shapes) if not shape.locked]
+        self.set_selection(pickable)
+        self.refresh(f"Selected {len(self.selected_indices())} objects."
+                     if pickable else "Nothing to select.")
+        return "break"
+
+    def deselect_all(self, event=None):
+        if self.design_shortcut_allowed(event) is False:
+            return
+        self.set_selection(())
+        self.refresh("Selection cleared.")
+        return "break"
+
+    def zoom_to_selection(self, event=None):
+        """Frame the selection, or the whole design when nothing is selected."""
+        indices = self.selected_indices() or range(len(self.document.shapes))
+        boxes = [shape_bounds(self.document.shapes[i]) for i in indices
+                 if 0 <= i < len(self.document.shapes)]
+        if not boxes:
+            self.message.set("Nothing to zoom to.")
+            return "break"
+        left = min(b[0] for b in boxes); bottom = min(b[1] for b in boxes)
+        right = max(b[2] for b in boxes); top = max(b[3] for b in boxes)
+        margin = 5.0
+        span_x = max(right - left + margin * 2, 1.0)
+        span_y = max(top - bottom + margin * 2, 1.0)
+        zoom = clamp_zoom(1.0, min(BED_X / span_x, BED_Y / span_y), 0.5, 8.0)
+        self.view_zoom = zoom
+        # Pan so the selection's centre lands on the middle of the bed view.
+        centre = ((left + right) / 2, (bottom + top) / 2)
+        view = fit_viewport(max(100, self.bed.winfo_width()), max(100, self.bed.winfo_height()),
+                            64, 50, zoom, 0.0, 0.0)
+        target = view.to_canvas(*centre)
+        self.pan_x = self.bed.winfo_width() / 2 - target[0]
+        self.pan_y = self.bed.winfo_height() / 2 - target[1]
+        self.zoom_text.set(f"{self.view_zoom * 100:.0f}%")
+        self.draw()
+        return "break"
+
+    def toggle_lock(self):
+        def apply():
+            indices = self.selected_indices()
+            if not indices:
+                raise ValueError("Select something to lock or unlock.")
+            locking = not all(self.document.shapes[i].locked for i in indices)
+            self.checkpoint()
+            for index in indices:
+                self.document.update(index, locked=locking)
+            self.refresh(f"{'Locked' if locking else 'Unlocked'} {len(indices)} objects."
+                         + (" Locked objects are not picked up by a click." if locking else ""))
+        self.act(apply)
 
     def group_members(self, indices):
         """Everything sharing a group with the given selection.
@@ -1430,8 +1552,9 @@ class GeometryWindow:
     def open_design(self, path=None):
         if not self.confirm_discard():
             return
-        path = path or filedialog.askopenfilename(parent=self.window, title="Open Atomstack design",
-                                          filetypes=(("Atomstack design", "*.atomdesign"), ("JSON files", "*.json")))
+        path = path or self.ask_open(title="Open Atomstack design",
+                                     filetypes=(("Atomstack design", "*.atomdesign"),
+                                                ("JSON files", "*.json")))
         if not path:
             return
         try:
@@ -1454,9 +1577,9 @@ class GeometryWindow:
     def save_design(self):
         path = self.design_path
         if path is None:
-            chosen = filedialog.asksaveasfilename(parent=self.window, title="Save Atomstack design",
-                                                   defaultextension=".atomdesign",
-                                                   filetypes=(("Atomstack design", "*.atomdesign"),))
+            chosen = self.ask_save(title="Save Atomstack design",
+                                   defaultextension=".atomdesign",
+                                   filetypes=(("Atomstack design", "*.atomdesign"),))
             if not chosen:
                 return
             path = Path(chosen)
@@ -1864,7 +1987,18 @@ class GeometryWindow:
         self.send_button.configure(state="normal" if ready and has_output else "disabled")
         self.pause_button.configure(state="normal" if job_running and not self.controller.job_paused else "disabled")
         self.resume_button.configure(state="normal" if job_running and self.controller.job_paused else "disabled")
-        self.frame_status.set((self.controller.message if job_running else reason) + f" · Cut beam X {self.controller.beam_offset_x:+g} mm from mark")
+        estimate = ""
+        if has_output and not job_running:
+            try:
+                metrics = self.document.job_metrics(
+                    rapid_feed=self.controller.max_xy_feed or None)
+                minutes, seconds = divmod(int(metrics["estimated_seconds"]), 60)
+                estimate = (f" · about {minutes} min {seconds:02d} s"
+                            if minutes else f" · about {seconds} s")
+            except ValueError:
+                estimate = ""
+        self.frame_status.set((self.controller.message if job_running else reason) + estimate
+                              + f" · Cut beam X {self.controller.beam_offset_x:+g} mm from mark")
 
     def refresh(self, message=None):
         if self.optimise_order.get() != self.document.optimise_order:
@@ -2025,7 +2159,10 @@ class GeometryWindow:
 
     def shape_at(self, event):
         x, y = self.to_bed(event, clamp=False)
-        bounds = [shape_bounds(shape) for shape in self.document.shapes]
+        # A locked object is given an empty box, so clicks fall through to
+        # whatever is under it rather than picking up the thing being traced.
+        bounds = [(math.inf, math.inf, -math.inf, -math.inf) if shape.locked
+                  else shape_bounds(shape) for shape in self.document.shapes]
         return topmost_at(x, y, bounds, self.transform().millimetres(7))
 
     def handle_at(self, event):

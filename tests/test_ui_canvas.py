@@ -581,6 +581,70 @@ class CanvasBehaviour(unittest.TestCase):
             self.assertEqual(shape_bounds(added), (10, 10, 50, 40))
         editor.tool.set("select")
 
+    def test_select_all_skips_locked_objects(self):
+        editor = self.app.geometry
+        for x in (10, 60, 110):
+            editor.document.shapes.append(Shape("rectangle", x, 10, 30, 30))
+        editor.set_selection((1,))
+        editor.toggle_lock()
+        self.assertTrue(editor.document.shapes[1].locked)
+        editor.select_all()
+        self.assertEqual(set(editor.selected_indices()), {0, 2})
+        editor.deselect_all()
+        self.assertEqual(editor.selected_indices(), ())
+
+    def test_a_locked_object_is_not_picked_up_by_a_click(self):
+        editor = self.app.geometry
+        editor.document.shapes.append(Shape("rectangle", 20, 20, 60, 60))
+        editor.set_selection((0,))
+        editor.toggle_lock()
+        view = editor.transform()
+        # Clicking right in the middle of it finds nothing.
+        self.assertIsNone(editor.shape_at(fake_event(*view.to_canvas(50, 50))))
+        editor.set_selection((0,))
+        editor.toggle_lock()
+        self.assertFalse(editor.document.shapes[0].locked)
+        self.assertEqual(editor.shape_at(fake_event(*view.to_canvas(50, 50))), 0)
+        editor.undo()
+
+    def test_zoom_to_selection_frames_what_is_selected(self):
+        editor = self.app.geometry
+        editor.document.shapes.append(Shape("rectangle", 10, 10, 20, 20))
+        editor.document.shapes.append(Shape("rectangle", 300, 250, 20, 20))
+        editor.fit_view()
+        wide = editor.view_zoom
+        editor.set_selection((0,))
+        editor.zoom_to_selection()
+        self.assertGreater(editor.view_zoom, wide)
+        # The selection sits near the middle of the view afterwards.
+        view = editor.transform()
+        px, py = view.to_canvas(20, 20)
+        self.assertAlmostEqual(px, editor.bed.winfo_width() / 2, delta=40)
+        editor.fit_view()
+
+    def test_the_numeric_fields_take_arithmetic(self):
+        editor = self.app.geometry
+        editor.tool.set("rectangle")
+        editor.set_selection(())
+        for name, text in (("x", "10"), ("y", "10"), ("width", "25.4/2"), ("height", "3*10")):
+            editor.fields[name].set(text)
+        editor.add_from_values()
+        added = editor.document.shapes[-1]
+        self.assertAlmostEqual(added.width, 12.7)
+        self.assertAlmostEqual(added.height, 30.0)
+        # And nonsense is refused rather than run.
+        editor.fields["width"].set("__import__('os')")
+        before = len(editor.document.shapes)
+        editor.add_from_values()
+        self.assertEqual(len(editor.document.shapes), before)
+        editor.tool.set("select")
+
+    def test_the_main_window_says_how_long_the_job_will_take(self):
+        editor = self.app.geometry
+        editor.document.shapes.append(Shape("rectangle", 10, 10, 100, 100, speed=600))
+        editor.refresh()
+        self.assertIn("about", editor.frame_status.get())
+
     def test_text_resize_handles_match_the_nominal_editable_box(self):
         editor = self.app.geometry
         text = Shape("text", 10, 20, 100, 30, text="I")
@@ -605,7 +669,7 @@ class CanvasBehaviour(unittest.TestCase):
             editor.design_path = save_path
             editor.save_design()
             saved = json.loads(save_path.read_text(encoding="utf-8"))
-            self.assertEqual(saved["version"], 7)
+            self.assertEqual(saved["version"], 8)
             self.assertEqual(saved["shapes"][0]["rotation"], 90)
             self.assertTrue(saved["shapes"][0]["mirror_x"])
             self.assertEqual(list(Path(folder).glob("*.tmp")), [],
