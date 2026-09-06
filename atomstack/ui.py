@@ -2443,8 +2443,28 @@ def main():
         library.save(MaterialPreset("Package test", 900, 250, 1))
         reloaded = MaterialLibrary(material_path).get("Package test")
         material_path.unlink(missing_ok=True)
+        # Imaging pulls in Pillow and numpy, which the bundle has to carry.
+        # A packaged app that cannot import them fails here rather than in
+        # front of an operator with a photograph.
+        from .imaging import engraving_shape, image_shapes
+        picture_path = report.with_name("packaged-image-test.png")
+        from PIL import Image, ImageDraw
+        picture = Image.new("L", (240, 160), 255)
+        ImageDraw.Draw(picture).ellipse((40, 30, 200, 130), fill=0)
+        picture.save(picture_path)
+        traced, = image_shapes(picture_path, width_mm=60, tolerance_mm=0.2)
+        engraving = engraving_shape(picture_path, width_mm=60, interval=0.5,
+                                    speed=3000, power=400)
+        engraved = Document()
+        engraved.add(engraving)
+        raster_code = engraved.gcode((-288, -301))
+        picture_path.unlink(missing_ok=True)
         report.write_text(json.dumps({"result":"PASS", "vector_lines":code.count("G53 G1"),
-                                      "test_cells":4, "material_power":reloaded.power}), encoding="utf-8")
+                                      "test_cells":4, "material_power":reloaded.power,
+                                      "traced_outlines":len(traced.paths),
+                                      "engraved_marks":raster_code.count(" S"),
+                                      "engraving_mm":round(engraving.width, 1)}),
+                          encoding="utf-8")
         return
     if args.demo and args.port:
         parser.error("--demo and --port cannot be combined")
