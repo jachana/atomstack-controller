@@ -1,2 +1,4 @@
 pyserial==3.5
 fonttools==4.59.1
+pillow==12.2.0
+numpy==2.4.3

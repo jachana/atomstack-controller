@@ -363,6 +363,59 @@ class CanvasBehaviour(unittest.TestCase):
         editor.refresh()
         self.assertFalse(editor.optimise_order.get())
 
+    def test_image_import_traces_before_adding_and_reports_what_it_found(self):
+        from PIL import Image, ImageDraw
+        from atomstack.ui import ImageImportWindow
+        editor = self.app.geometry
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "ring.png"
+            picture = Image.new("L", (300, 200), 255)
+            pen = ImageDraw.Draw(picture)
+            pen.ellipse((40, 20, 240, 180), fill=0)
+            pen.ellipse((110, 70, 170, 130), fill=255)
+            picture.save(path)
+            window = ImageImportWindow(editor, path)
+            try:
+                window.fields["width"].set("150")
+                # Nothing reaches the design until it has been traced.
+                self.assertEqual(str(window.add_button.cget("state")), "disabled")
+                before = len(editor.document.shapes)
+                window.add()
+                self.assertEqual(len(editor.document.shapes), before)
+
+                window.trace()
+                self.assertIn("outlines", window.status.get())
+                self.assertEqual(str(window.add_button.cget("state")), "normal")
+                window.add()
+                self.assertEqual(len(editor.document.shapes), before + 1)
+                added = editor.document.shapes[-1]
+                self.assertEqual(len(added.paths), 2)     # the disc and its hole
+                left, _, right, _ = shape_bounds(added)
+                self.assertAlmostEqual(right - left, 100, delta=3)
+                self.assertIn("Imported 2 outlines", editor.message.get())
+                editor.undo()
+                self.assertEqual(len(editor.document.shapes), before)
+            finally:
+                if window.window.winfo_exists():
+                    window.window.destroy()
+
+    def test_an_image_that_traces_to_nothing_reports_instead_of_adding(self):
+        from PIL import Image
+        from atomstack.ui import ImageImportWindow
+        editor = self.app.geometry
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "blank.png"
+            Image.new("L", (60, 60), 255).save(path)
+            window = ImageImportWindow(editor, path)
+            try:
+                window.fields["level"].set("0.0")
+                window.trace()
+                self.assertEqual(str(window.add_button.cget("state")), "disabled")
+                self.assertTrue(window.status.get())
+            finally:
+                if window.window.winfo_exists():
+                    window.window.destroy()
+
     def test_text_resize_handles_match_the_nominal_editable_box(self):
         editor = self.app.geometry
         text = Shape("text", 10, 20, 100, 30, text="I")

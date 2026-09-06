@@ -657,6 +657,7 @@ class GeometryWindow:
         file_menu = tk.Menu(self.window, tearoff=False)
         file_menu.add_command(label="Import SVG…", command=self.import_svg)
         file_menu.add_command(label="Import DXF…", command=self.import_dxf)
+        file_menu.add_command(label="Import image…", command=self.import_image)
         file_menu.add_command(label="Save as…", command=self.save_as)
         file_menu.add_command(label="Recent designs…", command=self.open_recent)
         file_menu.add_command(label="Recover autosave…", command=self.recover_design)
@@ -991,6 +992,22 @@ class GeometryWindow:
 
     def import_dxf(self):
         self.import_vectors("DXF", (("DXF drawings", "*.dxf"),))
+
+    def import_image(self):
+        path = filedialog.askopenfilename(
+            parent=self.window, title="Import image",
+            filetypes=(("Images", "*.png *.jpg *.jpeg *.bmp *.gif *.webp *.tif *.tiff"),))
+        if path:
+            ImageImportWindow(self, Path(path))
+
+    def place_imported(self, shapes, description):
+        """Shared tail of every importer: add, select, frame the view, report."""
+        self.checkpoint()
+        first = len(self.document.shapes)
+        self.document.shapes.extend(shapes)
+        self.set_selection(range(first, first + len(shapes)))
+        self.fit_view()
+        self.refresh(description)
 
     def import_vectors(self, kind, filetypes):
         """Both importers return bed-millimetre shapes, so the rest is shared."""
@@ -2090,6 +2107,105 @@ class GeometryWindow:
                 coords.extend((x0 + x * scale, y0 - y * scale))
             if coords:
                 self.bed.create_line(*coords, fill="#d66a1f", width=2, dash=(7, 4))
+
+
+class ImageImportWindow:
+    """Choose how a picture becomes outlines, and see the count before adding.
+
+    The settings are the ones that change what gets cut: how the light and dark
+    are separated, how much detail survives, and how big the result is. Tracing
+    runs on demand rather than on every keystroke, because a large photograph
+    takes long enough that doing it per character would feel broken.
+    """
+
+    def __init__(self, editor, path):
+        self.editor = editor
+        self.path = path
+        self.shapes = ()
+        self.window = tk.Toplevel(editor.window)
+        self.window.title(f"Import image · {path.name}")
+        self.window.transient(editor.window)
+        outer = ttk.Frame(self.window, padding=16)
+        outer.pack(fill="both", expand=True)
+        ttk.Label(outer, text="Import image as outlines", style="Title.TLabel").pack(anchor="w")
+        ttk.Label(outer, text=path.name, style="Quiet.TLabel").pack(anchor="w", pady=(0, 10))
+
+        self.mode = tk.StringVar(value="outline")
+        row = ttk.Frame(outer)
+        row.pack(fill="x", pady=2)
+        ttk.Label(row, text="Trace", width=20).pack(side="left")
+        ttk.Radiobutton(row, text="Light and dark", variable=self.mode,
+                        value="outline").pack(side="left")
+        ttk.Radiobutton(row, text="Edges", variable=self.mode,
+                        value="edges").pack(side="left", padx=8)
+
+        self.fields = {}
+        for label, name, value in (("Width · mm", "width", "100"),
+                                   ("Threshold · blank = auto", "level", ""),
+                                   ("Blur · pixels", "blur", "0"),
+                                   ("Brightness · -1 to 1", "brightness", "0"),
+                                   ("Contrast · 0 to 10", "contrast", "1"),
+                                   ("Simplify · mm", "tolerance", "0.1"),
+                                   ("Ignore below · mm2", "min_area", "1")):
+            row = ttk.Frame(outer)
+            row.pack(fill="x", pady=1)
+            ttk.Label(row, text=label, width=20).pack(side="left")
+            self.fields[name] = tk.StringVar(value=value)
+            ttk.Entry(row, textvariable=self.fields[name], width=10).pack(side="right")
+        self.invert = tk.BooleanVar(value=False)
+        ttk.Checkbutton(outer, text="Invert (cut the light areas instead)",
+                        variable=self.invert).pack(anchor="w", pady=(4, 0))
+
+        self.status = tk.StringVar(value="Choose settings, then Trace.")
+        ttk.Label(outer, textvariable=self.status, style="Quiet.TLabel",
+                  wraplength=320, justify="left").pack(anchor="w", pady=(10, 6))
+        actions = ttk.Frame(outer)
+        actions.pack(fill="x")
+        ttk.Button(actions, text="Trace", command=self.trace).pack(side="left")
+        self.add_button = ttk.Button(actions, text="Add to design", command=self.add,
+                                     state="disabled")
+        self.add_button.pack(side="left", padx=6)
+        ttk.Button(actions, text="Cancel", command=self.window.destroy).pack(side="right")
+
+    def values(self):
+        numbers = {}
+        for name, variable in self.fields.items():
+            text = variable.get().strip()
+            if name == "level" and not text:
+                numbers[name] = None
+                continue
+            numbers[name] = float(text)
+        return numbers
+
+    def trace(self):
+        from .imaging import image_shapes
+        try:
+            values = self.values()
+            self.shapes = image_shapes(
+                self.path, width_mm=values["width"], mode=self.mode.get(),
+                level=values["level"], blur_radius=values["blur"],
+                brightness=values["brightness"], contrast=values["contrast"],
+                invert=self.invert.get(), tolerance_mm=values["tolerance"],
+                min_area_mm=values["min_area"])
+            outlines = sum(len(shape.paths) for shape in self.shapes)
+            points = sum(len(path) for shape in self.shapes for path in shape.paths)
+            left, bottom, right, top = shape_bounds(self.shapes[0])
+            self.status.set(f"{outlines} outlines · {points} points · "
+                            f"{right-left:.1f} x {top-bottom:.1f} mm. "
+                            "Add it, or change the settings and trace again.")
+            self.add_button.configure(state="normal")
+        except (ValueError, OSError) as exc:
+            self.shapes = ()
+            self.add_button.configure(state="disabled")
+            self.status.set(str(exc))
+
+    def add(self):
+        if not self.shapes:
+            return
+        outlines = sum(len(shape.paths) for shape in self.shapes)
+        self.editor.place_imported(
+            self.shapes, f"Imported {outlines} outlines from {self.path.name}.")
+        self.window.destroy()
 
 
 class JobPreviewWindow:
