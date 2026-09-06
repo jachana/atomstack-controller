@@ -1,7 +1,10 @@
 """Single-threaded session state machine; transport and UI contain no motion policy.
 
-Only one request is in flight. Status queries complete on a status report;
-newline commands complete on an acknowledgement.
+Only one request is in flight, except while streaming a job, where G-code is
+written ahead to keep GRBL's receive buffer fed and its planner looking ahead.
+Nothing else ever shares the wire: this firmware corrupts a line command that a
+status query overlaps. Status queries complete on a status report; newline
+commands complete on an acknowledgement.
 No stored coordinate is ever trusted across a connection or reset.
 """
 from collections import deque
@@ -14,6 +17,15 @@ from .protocol import EXPECTED, READ_COMMANDS, parse_setting, parse_status
 
 JOG_FEEDS = (180, 300, 600, 1000, 1200, 3000, 6000, 12000, 20000)
 PLANNER_BLOCKS = 16  # GRBL 1.1 BLOCK_BUFFER_SIZE; how far ahead an ack can be held.
+# GRBL's serial input is 128 bytes. Keeping it fed is what lets the planner look
+# ahead, so a swept line runs at speed instead of stopping at every power change.
+# A margin is left because a partly consumed buffer is reported by nothing.
+RX_BUFFER = 120
+# Writing ahead pays off when a command's motion is short next to the round trip
+# it takes to acknowledge. A long cutting move gains nothing from it, and would
+# only put an acknowledgement further out of reach, so the window is also
+# bounded by the motion time already handed over.
+WRITE_AHEAD_SECONDS = 1.5
 
 
 class GuardError(RuntimeError):
@@ -25,6 +37,13 @@ class Command:
     text: str
     tag: str
     timeout: float = 5.0
+    sent_at: float = 0.0
+    size: int = 0
+    seconds: float = 0.0   # How long its motion takes, for the write-ahead window.
+
+    @property
+    def wire_size(self):
+        return len(self.text) + 1
 
 
 class Controller:
@@ -42,8 +61,11 @@ class Controller:
 
     def _clear(self):
         self.queue = deque()
-        self.pending = None
-        self.sent_at = 0.0
+        # Commands written but not yet acknowledged, oldest first. Everything
+        # except job G-code keeps exactly one here, so the reply to a query can
+        # never be confused with the reply to something else.
+        self.inflight = deque()
+        self.inflight_bytes = 0
         self.buffer = b""
         self.settings = {}
         self.firmware = "Not read"
@@ -81,6 +103,11 @@ class Controller:
     @property
     def connected(self):
         return self.transport is not None
+
+    @property
+    def pending(self):
+        """The oldest command still waiting to be acknowledged."""
+        return self.inflight[0] if self.inflight else None
 
     @property
     def app_position(self):
@@ -132,8 +159,8 @@ class Controller:
         self.tx_count += 1
         self.log.append(("TX", f"{data!r}  [hex: {data.hex(' ')}]"))
 
-    def _enqueue(self, text, tag=None, timeout=5.0):
-        self.queue.append(Command(text, tag or text, timeout))
+    def _enqueue(self, text, tag=None, timeout=5.0, seconds=0.0):
+        self.queue.append(Command(text, tag or text, timeout, seconds=seconds))
 
     def _invalidate(self):
         self.origin = None
@@ -196,6 +223,22 @@ class Controller:
         if not self.connected or not self.ready or self.phase != "idle" or self.pending or self.queue:
             raise GuardError("Wait for diagnostics or motion to finish.")
         self._enqueue(command)
+
+    def _room_for(self, command):
+        """Whether this command may go out while others are unacknowledged.
+
+        Only job G-code streams ahead, and only behind more job G-code. This
+        firmware corrupts a line command that a status query overlaps, and every
+        other exchange here is a question expecting one answer, so those keep the
+        wire to themselves.
+        """
+        if not self.inflight:
+            return True
+        if command.tag != "job" or any(item.tag != "job" for item in self.inflight):
+            return False
+        if self.inflight_bytes + command.wire_size > RX_BUFFER:
+            return False
+        return sum(item.seconds for item in self.inflight) < WRITE_AHEAD_SECONDS
 
     def _status_poll_pending(self):
         return self.pending is not None and self.pending.text == "?" and not self.queue
@@ -460,24 +503,50 @@ class Controller:
         return distance / speed + (speed / acceleration if math.isfinite(acceleration) else 0.0)
 
     def _start_job_command(self):
+        """Keep enough job G-code queued to fill the machine's receive buffer.
+
+        Queueing more than one is what lets tick() write ahead. Only the wire
+        rule in _room_for() decides how much actually goes out.
+        """
         if self.job_paused:
             return
-        if not self.job_commands:
+        while self.job_commands and self._queued_bytes() < RX_BUFFER:
+            command = self.job_commands.popleft()
+            seconds = self.job_durations.popleft() if self.job_durations else 0.0
+            if seconds:
+                # The window stands for what the planner is holding, and the
+                # planner holds motion. Counting M4 and S0 in it made sixteen
+                # blocks look like three, and under-estimated the wait.
+                self.job_window.append(seconds)
+            # Power is raised as soon as a command is queued and lowered only
+            # once one is acknowledged, so the expected value always covers
+            # everything the machine could currently be executing.
+            if command.startswith("M4 S"):
+                self.job_expected_power = max(self.job_expected_power,
+                                              int(command.split("S", 1)[1]))
+            self.phase = "job-command"
+            # GRBL acknowledges a move when it is parsed into the planner, so on
+            # a full buffer this acknowledgement waits for a block to finish. The
+            # longest block it could be waiting on is one of the last few sent,
+            # plus whatever short work was written ahead of it.
+            self._enqueue(command, "job",
+                          10 + WRITE_AHEAD_SECONDS + max(self.job_window, default=0.0),
+                          seconds=seconds)
+        if not self.job_commands and not self.queue and not self.inflight:
             self.phase = "job-verify-modal"
             self._enqueue("$G", "job-modal")
             return
-        command = self.job_commands.popleft()
-        self.job_window.append(self.job_durations.popleft() if self.job_durations else 0.0)
-        if command.startswith("M4 S"):
-            self.job_expected_power = int(command.split("S", 1)[1])
-        elif command in ("M5", "S0"):
-            self.job_expected_power = 0
-        self.phase = "job-command"
-        # GRBL acknowledges a move when it is parsed into the planner, so on a
-        # full buffer this acknowledgement waits for a block to finish. The
-        # longest block it could be waiting on is one of the last few sent.
-        self._enqueue(command, "job", 10 + max(self.job_window, default=0.0))
         self.message = f"Sending job · {self.job_done}/{self.job_total} commands · power {self.job_expected_power}."
+
+    def _queued_bytes(self):
+        return sum(item.wire_size for item in self.queue) + self.inflight_bytes
+
+    def _disarmed_ahead(self):
+        """Power the machine could still be asked for, from what is not yet done."""
+        waiting = [item.text for item in self.inflight] + [item.text for item in self.queue]
+        waiting += list(self.job_commands)
+        powers = [int(text.split("S", 1)[1]) for text in waiting if text.startswith("M4 S")]
+        return max(powers, default=0)
 
     def pause_job(self):
         if not self.connected or not self.phase.startswith("job") or self.job_paused:
@@ -494,7 +563,8 @@ class Controller:
         # The held time is not evidence of a stuck machine: give the in-flight
         # command and the job as a whole a fresh window from the resume.
         now = self.clock()
-        self.sent_at = now
+        for command in self.inflight:
+            command.sent_at = now
         # What is left to send, plus what the planner is still holding.
         self.motion_deadline = now + sum(self.job_durations) + sum(self.job_window) + 120
         # An in-flight command still owes its acknowledgement, and that
@@ -546,7 +616,8 @@ class Controller:
             self.last_tick = now
             stalled = gap > 0.5  # Longer than a poll cycle: ticking really stopped.
             if stalled:
-                self.sent_at += gap
+                for command in self.inflight:
+                    command.sent_at += gap
                 for name in ("motion_deadline", "settle_until"):
                     deadline = getattr(self, name)
                     if math.isfinite(deadline):
@@ -555,7 +626,7 @@ class Controller:
             # an operator pause must not be read as a silent controller.
             # resume_job() restarts both clocks.
             if not self.job_paused:
-                if self.pending and now - self.sent_at > self.pending.timeout:
+                if self.pending and now - self.pending.sent_at > self.pending.timeout:
                     self.fault(f"Timed out waiting for {self.pending.text}.")
                     return
                 if now > self.motion_deadline:
@@ -578,12 +649,19 @@ class Controller:
                     pass  # Not settled yet; the next tick tries again.
             if not self.pending and not self.queue and now - self.last_poll >= 0.4:
                 self._enqueue("?", "status")
-            if not self.pending and self.queue:
-                self.pending = self.queue.popleft()
-                self.sent_at = now
-                if self.pending.text == "?":
+            while self.queue and self._room_for(self.queue[0]):
+                command = self.queue.popleft()
+                command.sent_at = now
+                if command.tag == "job":
+                    # It cannot be acknowledged before the motion already handed
+                    # to the machine has run, so its budget has to include that.
+                    command.timeout += sum(item.seconds for item in self.inflight)
+                if command.text == "?":
                     self.last_poll = now
-                wire = b"?" if self.pending.text == "?" else (self.pending.text + "\n").encode("ascii")
+                wire = b"?" if command.text == "?" else (command.text + "\n").encode("ascii")
+                command.size = len(wire)
+                self.inflight.append(command)
+                self.inflight_bytes += command.size
                 self._write(wire)
         except Exception as exc:
             self.fault(f"Connection/report error: {exc}.")
@@ -607,8 +685,14 @@ class Controller:
             if self.pending is None or self.pending.text == "?":
                 self.fault("Unexpected acknowledgement; command ordering is uncertain.")
                 return
-            tag = self.pending.tag
-            self.pending = None
+            acknowledged = self.inflight.popleft()
+            self.inflight_bytes -= acknowledged.size
+            # Written-ahead commands wait in the machine's buffer for the motion
+            # queued before them, so a command's own budget starts when it
+            # becomes the one being waited on, not when it was written.
+            if self.inflight:
+                self.inflight[0].sent_at = self.clock()
+            tag = acknowledged.tag
             if tag == "init-modal":
                 # GRBL rejects ordinary G-code while homing-locked. In Alarm,
                 # require a reported M5 S0 and physical disconnection before $H.
@@ -634,6 +718,10 @@ class Controller:
                 self._enqueue("?", "status")
             elif tag == "job":
                 self.job_done += 1
+                if acknowledged.text in ("M5", "S0"):
+                    # Safe to lower only now: anything still queued or in flight
+                    # that raises power again keeps the expectation up.
+                    self.job_expected_power = self._disarmed_ahead()
                 self._start_job_command()
             elif tag == "job-modal":
                 self.phase = "job-status"
@@ -642,7 +730,7 @@ class Controller:
         if line.startswith("<"):
             report = parse_status(line)
             if self.pending and self.pending.text == "?":
-                self.pending = None
+                self.inflight_bytes -= self.inflight.popleft().size
             self.status = report
             self.status_at = self.clock()
             if report.state == "Alarm" and self.origin is None and self.phase in ("initializing", "idle"):

@@ -94,7 +94,11 @@ class Simulator:
         # hold freezes that clock, so held blocks never finish and the move
         # waiting for space is never acknowledged.
         self.blocks = deque()
-        self.waiting = None
+        # Lines received but not yet parsed. GRBL reads the wire into a 128 byte
+        # buffer and its parser takes lines from there as the planner has room,
+        # so a sender may write several ahead and their acknowledgements come
+        # back later, in order.
+        self.incoming = deque()
         self.holding = False
         self.held_total = 0.0
         self.hold_at = 0.0
@@ -117,25 +121,41 @@ class Simulator:
         return self.hold_at if self.holding else self.clock() - self.held_total
 
     def drain(self):
-        """Retire finished blocks and admit the move that was waiting for room."""
+        """Retire finished blocks, then parse as many waiting lines as fit."""
         now = self.machine_now()
         while self.blocks and self.blocks[0] <= now:
             self.blocks.popleft()
-        if self.waiting is not None and not self.holding and len(self.blocks) < self.PLANNER_BLOCKS:
-            x, y, feed = self.waiting
-            self.waiting = None
-            self.rx.append(self.admit(x, y, feed).encode())
+        while self.incoming and not self.holding:
+            command = self.incoming[0]
+            if self.is_motion(command) and len(self.blocks) >= self.PLANNER_BLOCKS:
+                break  # The parser stalls here, and the acknowledgement with it.
+            self.incoming.popleft()
+            response = self.run(command)
+            if response:
+                self.rx.append(response.encode())
+
+    def is_motion(self, command):
+        """Whether parsing this line needs a planner block to be free."""
+        return any(pattern.fullmatch(command)
+                   for pattern in (self.MOVE, self.JOG_ABSOLUTE, self.JOG_RELATIVE))
 
     def admit(self, x, y, feed):
         """Queue one block and acknowledge it, the way GRBL's parser does.
 
-        A block costs its distance at feed plus the time to reach that feed
-        from a standstill, so a job of many short segments takes noticeably
-        longer than its distance alone suggests.
+        A block costs its distance at feed, plus the time to reach that feed
+        from a standstill when nothing was queued behind the previous one. A
+        sender that lets the buffer run dry therefore pays a ramp per segment,
+        which is what makes a job of many short moves crawl.
         """
         speed = max(feed, 1.0) / 60.0
         acceleration = min(self.settings.get(120, 1000.0), self.settings.get(121, 1000.0))
-        seconds = math.dist(self.position, (x, y)) / speed + speed / max(acceleration, 1.0)
+        seconds = math.dist(self.position, (x, y)) / speed
+        if not self.blocks:
+            # Nothing queued behind the last block, so the machine came to rest
+            # and has to get back up to speed. With work already buffered the
+            # planner carries velocity across the join, which is the whole
+            # reason a sender keeps the buffer fed.
+            seconds += speed / max(acceleration, 1.0)
         start = max(self.blocks[-1] if self.blocks else 0.0, self.machine_now())
         self.blocks.append(start + seconds)
         self.position = [x, y]
@@ -167,13 +187,21 @@ class Simulator:
             return "error:15\n"
         return None
 
+    REALTIME = (b"?", b"!", b"~", bytes([24]), bytes([133]))
+
     def write(self, data):
         if self.closed:
             raise OSError("Simulator disconnected")
         self.writes.append(data)
-        response = self.respond(data, data.decode("ascii", errors="replace").strip())
-        if response:
-            self.rx.append(response.encode())
+        if data in self.REALTIME:
+            # Real-time characters are acted on where they are found in the
+            # stream, without waiting for the parser.
+            response = self.respond(data, data.decode("ascii", errors="replace").strip())
+            if response:
+                self.rx.append(response.encode())
+            return
+        self.incoming.append(data.decode("ascii", errors="replace").strip())
+        self.drain()
 
     def respond(self, data, command):
         if data == b"?":
@@ -201,7 +229,7 @@ class Simulator:
     def clear_motion(self):
         self.resume()
         self.blocks.clear()
-        self.waiting = None
+        self.incoming.clear()
 
     def resume(self):
         if self.holding:
@@ -259,12 +287,6 @@ class Simulator:
         error = self.travel_error(x, y)
         if error:
             return error
-        self.drain()
-        if self.holding or len(self.blocks) >= self.PLANNER_BLOCKS:
-            # No room, or no motion at all: the parser blocks here, and with it
-            # the acknowledgement. Nothing else is read from the wire meanwhile.
-            self.waiting = (x, y, feed)
-            return ""
         return self.admit(x, y, feed)
 
     def close(self):

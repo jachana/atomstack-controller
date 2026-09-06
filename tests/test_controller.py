@@ -2,7 +2,7 @@ import unittest
 from unittest.mock import patch, MagicMock
 from pathlib import Path
 
-from atomstack.controller import Controller, GuardError
+from atomstack.controller import Command, Controller, GuardError, RX_BUFFER
 from atomstack.protocol import EXPECTED, parse_status, parse_setting
 from atomstack.transports import Simulator, SerialTransport
 
@@ -542,10 +542,60 @@ class SessionTests(unittest.TestCase):
         self.assertTrue(self.c.connected, self.c.message)
         self.assertEqual(self.c.phase, "idle", self.c.message)
         self.assertEqual(self.c.job_done, self.c.job_total)
-        # 250 mm at 6000 mm/min is 2.5 s of travel; getting up to speed 2500
-        # times costs two orders of magnitude more, and a job deadline built
-        # from distance alone expires long before the machine is late.
-        self.assertGreater(self.clock.time, 200)
+        # 250 mm at 6000 mm/min is 2.5 s of travel. Getting up to speed costs
+        # far more than that, so a deadline built from distance alone expires
+        # long before the machine is late. Keeping the buffer fed removes part
+        # of the cost, not all of it: this took over 200 s when every segment
+        # started from rest, and still takes fifty times its distance now that
+        # the planner carries speed across the joins it has room to see.
+        self.assertGreater(self.clock.time, 60)
+        self.assertLess(self.clock.time, 200)
+
+    def test_job_gcode_is_written_ahead_to_keep_the_buffer_fed(self):
+        """Several commands in flight at once, bounded by the receive buffer."""
+        self.home()
+        ox, oy = self.c.origin
+        lines = ["G21", "G90", "M5", "S0", f"G53 G0 X{ox+10:.3f} Y{oy+10:.3f}", "M4 S200"]
+        for index in range(200):
+            lines.append(f"G53 G1 X{ox+10+index*0.2:.3f} Y{oy+10:.3f} F6000")
+        lines += ["M5", "S0"]
+        self.c.run_job(lines)
+        deepest = 0
+        for _ in range(4000):
+            self.pump(1)
+            deepest = max(deepest, len(self.c.inflight))
+            if self.c.phase == "idle" or not self.c.connected:
+                break
+        self.assertTrue(self.c.connected, self.c.message)
+        self.assertGreater(deepest, 1, "job G-code should stream ahead")
+        self.assertLessEqual(sum(c.wire_size for c in self.c.inflight), RX_BUFFER)
+
+    def test_nothing_but_job_gcode_ever_shares_the_wire(self):
+        """This firmware corrupts a line command that a status query overlaps."""
+        self.home()
+        # A status poll goes out alone, even with a queue behind it.
+        self.c._enqueue("?", "status")
+        self.c._enqueue("$G", "probe")
+        self.pump(1)
+        self.assertEqual([c.text for c in self.c.inflight], ["?"])
+        # And a query never joins job commands already in flight.
+        self.c.inflight.clear()
+        self.c.inflight_bytes = 0
+        self.c.inflight.append(Command("G53 G1 X1.000 Y1.000 F3000", "job", size=27))
+        self.assertFalse(self.c._room_for(Command("?", "status")))
+        self.assertFalse(self.c._room_for(Command("$G", "probe")))
+        self.assertTrue(self.c._room_for(Command("G53 G1 X2.000 Y2.000 F3000", "job")))
+
+    def test_write_ahead_stops_at_the_motion_it_has_handed_over(self):
+        """A long move gains nothing from being queued behind another."""
+        self.home()
+        self.c.inflight.clear()
+        self.c.inflight_bytes = 0
+        slow = Command("G53 G1 X1.000 Y1.000 F60", "job", size=25, seconds=20.0)
+        self.c.inflight.append(slow)
+        self.assertFalse(self.c._room_for(Command("G53 G1 X2.000 Y2.000 F60", "job")))
+        self.c.inflight[0].seconds = 0.01
+        self.assertTrue(self.c._room_for(Command("G53 G1 X2.000 Y2.000 F60", "job")))
 
     def test_job_stops_on_excess_reported_power_or_wrong_final_position(self):
         self.home()
