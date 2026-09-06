@@ -21,7 +21,7 @@ try:
 except ImportError:
     tk = None
 
-from atomstack.geometry import BED_X, BED_Y, Shape, shape_bounds, shape_paths
+from atomstack.geometry import BED_X, BED_Y, Document, Shape, shape_bounds, shape_paths
 from atomstack.viewport import ROTATE_HANDLE
 
 NEWLINE = chr(10)
@@ -345,6 +345,23 @@ class CanvasBehaviour(unittest.TestCase):
         editor.weld_selection()
         self.assertEqual(tuple(editor.document.shapes), before)
         self.assertIn("two or more", editor.message.get())
+
+    def test_cut_order_toggle_edits_the_document_and_follows_what_is_opened(self):
+        editor = self.app.geometry
+        editor.document.shapes.append(Shape("rectangle", 10, 10, 20, 20))
+        editor.document.shapes.append(Shape("rectangle", 200, 200, 20, 20))
+        editor.optimise_order.set(False)
+        editor.set_cut_order()
+        self.assertFalse(editor.document.optimise_order)
+        self.assertIn("design list", editor.message.get())
+        editor.undo()
+        self.assertTrue(editor.document.optimise_order)
+        # Opening a document that had it off must move the menu with it.
+        loaded = Document.from_payload(editor.document.to_payload())
+        loaded.optimise_order = False
+        editor.document = loaded
+        editor.refresh()
+        self.assertFalse(editor.optimise_order.get())
 
     def test_text_resize_handles_match_the_nominal_editable_box(self):
         editor = self.app.geometry

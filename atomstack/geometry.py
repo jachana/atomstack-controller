@@ -123,10 +123,75 @@ class CutLayer:
         return self
 
 
+def entry_point(shape):
+    """Where cutting this object starts, which is where the head must arrive."""
+    return shape_paths(shape)[0][0]
+
+
+def exit_point(shape):
+    """Where cutting it ends, which is where the next move starts from."""
+    return shape_paths(shape)[-1][-1]
+
+
+def _encloses_box(outer, inner):
+    """True when one bounding box strictly contains another."""
+    ol, ob, orr, ot = outer
+    il, ib, ir, it = inner
+    return ol <= il and ob <= ib and orr >= ir and ot >= it and (
+        ol < il or ob < ib or orr > ir or ot > it)
+
+
+MAX_ORDERED = 400  # Beyond this, ordering costs more than the travel it saves.
+
+
+def ordered_for_travel(items, start=(0.0, 0.0)):
+    """Order objects to shorten travel, cutting enclosed objects first.
+
+    ``items`` are (index, shape) pairs and come back reordered. An object that
+    encloses another still waiting is held back: cutting a plate's outline
+    before its own holes frees the part while there is still work to do on it.
+
+    Entry and exit points and the containment relation are computed once, so the
+    walk itself is a plain nearest-neighbour scan. Past ``MAX_ORDERED`` objects
+    even that is too slow to run on every redraw, and design order is kept.
+    """
+    if len(items) > MAX_ORDERED:
+        return list(items)
+    entries = [entry_point(shape) for _, shape in items]
+    exits = [exit_point(shape) for _, shape in items]
+    boxes = [shape_bounds(shape) for _, shape in items]
+
+    # blocked[i] counts objects still waiting that i encloses.
+    encloses = [[] for _ in items]
+    blocked = [0] * len(items)
+    for i, outer in enumerate(boxes):
+        for j, inner in enumerate(boxes):
+            if i != j and _encloses_box(outer, inner):
+                encloses[i].append(j)
+                blocked[i] += 1
+
+    remaining = set(range(len(items)))
+    position = start
+    result = []
+    while remaining:
+        ready = [i for i in remaining if blocked[i] == 0] or list(remaining)
+        nearest = min(ready, key=lambda i: math.dist(position, entries[i]))
+        remaining.discard(nearest)
+        for i in range(len(items)):
+            if nearest in encloses[i] and blocked[i]:
+                blocked[i] -= 1
+        result.append(items[nearest])
+        position = exits[nearest]
+    return result
+
+
 class Document:
     def __init__(self):
         self.shapes = []
         self.layers = []
+        # Shorten travel within each layer. Layer sequence is never reordered:
+        # which layer runs first is the operator's decision, not a distance.
+        self.optimise_order = True
 
     def validate_layers(self):
         names = [layer.validated().name for layer in self.layers]
@@ -148,21 +213,41 @@ class Document:
         order and retain individual settings (including burn-test cells).
         """
         self.validate_layers()
-        result = []
+        groups = []
         for layer in self.layers:
             if layer.enabled:
-                result.extend((i, replace(shape, speed=layer.speed, power=layer.power,
-                                          passes=layer.passes, mode=layer.mode, interval=layer.interval).validated())
-                              for i, shape in enumerate(self.shapes) if shape.layer == layer.name)
-        result.extend((i, shape.validated()) for i, shape in enumerate(self.shapes) if not shape.layer)
-        return tuple(result)
+                groups.append([(i, replace(shape, speed=layer.speed, power=layer.power,
+                                           passes=layer.passes, mode=layer.mode, interval=layer.interval).validated())
+                               for i, shape in enumerate(self.shapes) if shape.layer == layer.name])
+        groups.append([(i, shape.validated()) for i, shape in enumerate(self.shapes) if not shape.layer])
+        return tuple(item for group in groups for item in group)
+
+    def cut_plan(self, start=(0.0, 0.0)):
+        """The output plan in the order it will actually be cut.
+
+        Sending and previewing both come through here, so what the preview draws
+        is the path the head takes. Ordering happens per layer and never across
+        them: which layer runs first is the operator's decision, not a distance.
+        """
+        self.validate_layers()
+        plan, position = [], start
+        for layer in [l.name for l in self.layers if l.enabled] + [None]:
+            group = [item for item in self.output_shapes()
+                     if (item[1].layer == layer if layer else not item[1].layer)]
+            if self.optimise_order and len(group) > 1:
+                group = ordered_for_travel(group, position)
+            plan.extend(group)
+            if group:
+                position = exit_point(group[-1][1])
+        return tuple(plan)
 
     def to_payload(self):
         self.validate_layers()
         return {"format": "atomstack-design", "version": 5,
                 "bed": {"width": BED_X, "height": BED_Y},
                 "shapes": [shape.validated().__dict__ for shape in self.shapes],
-                "layers": [layer.__dict__ for layer in self.layers]}
+                "layers": [layer.__dict__ for layer in self.layers],
+                "optimise_order": self.optimise_order}
 
     @classmethod
     def from_payload(cls, data):
@@ -177,6 +262,10 @@ class Document:
             if not isinstance(data.get("layers"), list):
                 raise ValueError("Design layers must be a list.")
             document.layers = [CutLayer(**item).validated() for item in data["layers"]]
+        if "optimise_order" in data:
+            if not isinstance(data["optimise_order"], bool):
+                raise ValueError("Cut order optimisation must be on or off.")
+            document.optimise_order = data["optimise_order"]
         document.validate_layers()
         return document
 
@@ -234,7 +323,7 @@ class Document:
         return ((left, bottom), (right, bottom), (right, top), (left, top), (left, bottom))
 
     def gcode(self, machine_origin=None):
-        output = self.output_shapes()
+        output = self.cut_plan()
         if not output:
             raise ValueError("Enable a layer or add geometry before sending a job.")
         self.require_on_bed("sending")
@@ -270,11 +359,11 @@ class Document:
         rate. Callers that have read $110/$111 pass it in; ASSUMED_RAPID_FEED
         stands in only until the machine has said what it can do.
         """
-        output = self.output_shapes()
-        if not output:
+        if not self.output_shapes():
             raise ValueError("Enable a layer or add geometry before previewing.")
         if len(start) != 2 or not all(math.isfinite(value) for value in start):
             raise ValueError("Preview start must be a finite X/Y point.")
+        output = self.cut_plan(start)
         rapid_feed = rapid_feed or ASSUMED_RAPID_FEED
         segments = []
         current = tuple(start)

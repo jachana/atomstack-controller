@@ -722,6 +722,10 @@ class GeometryWindow:
         production.add_command(label="Array copies…", command=self.create_array)
         production.add_command(label="Offset outline…", command=self.create_offset)
         production.add_command(label="Weld selection", command=self.weld_selection)
+        production.add_separator()
+        self.optimise_order = tk.BooleanVar(value=self.document.optimise_order)
+        production.add_checkbutton(label="Shorten travel within each layer",
+                                   variable=self.optimise_order, command=self.set_cut_order)
         production.add_command(label="Align left edges", command=lambda: self.align_selection("left"))
         production.add_command(label="Align horizontal centers", command=lambda: self.align_selection("center_x"))
         production.add_command(label="Align bottom edges", command=lambda: self.align_selection("bottom"))
@@ -1032,6 +1036,16 @@ class GeometryWindow:
             self.refresh(f"Added {len(copies)} array objects.")
         self.act(apply_array)
 
+    def set_cut_order(self):
+        """Ordering changes the path, so it is an edit like any other."""
+        self.checkpoint()
+        self.document.optimise_order = self.optimise_order.get()
+        self.invalidate_preview()
+        saved = self.document.job_metrics()["rapid_distance"] if self.document.output_shapes() else 0
+        self.refresh("Cut order shortened within each layer · travel now "
+                     f"{saved:.0f} mm." if self.optimise_order.get() else
+                     "Cut order follows the design list.")
+
     def weld_selection(self):
         from .production import weld_shapes
 
@@ -1131,7 +1145,10 @@ class GeometryWindow:
         return "break"
 
     def snapshot(self):
-        return (tuple(self.document.shapes), str(self.design_path) if self.design_path else None, tuple(self.document.layers))
+        # Cut order belongs here too: it changes the path the head takes, so it
+        # is an edit, and Undo has to put it back like any other.
+        return (tuple(self.document.shapes), str(self.design_path) if self.design_path else None,
+                tuple(self.document.layers), self.document.optimise_order)
 
     def invalidate_preview(self):
         preview = self.preview_window
@@ -1147,9 +1164,10 @@ class GeometryWindow:
 
     def restore(self, snapshot, message):
         self.invalidate_preview()
-        shapes, path, layers = snapshot
+        shapes, path, layers, optimise_order = snapshot
         self.document.layers = list(layers)
         self.document.shapes = list(shapes)
+        self.document.optimise_order = optimise_order
         self.design_path = Path(path) if path else None
         self.set_selection(self.selection)
         if not self.selection and self.document.shapes:
@@ -1641,6 +1659,8 @@ class GeometryWindow:
         self.frame_status.set((self.controller.message if job_running else reason) + f" · Cut beam X {self.controller.beam_offset_x:+g} mm from mark")
 
     def refresh(self, message=None):
+        if self.optimise_order.get() != self.document.optimise_order:
+            self.optimise_order.set(self.document.optimise_order)
         self.listbox.delete(0, "end")
         for shape in self.document.shapes:
             layer = next((l for l in self.document.layers if l.name == shape.layer), None)
