@@ -2764,6 +2764,32 @@ def capture_import_previews(folder, image=None):
             window.window.destroy()
             root.update()
 
+    def shapes_row():
+        from .geometry import Shape
+        app.geometry.document.shapes.clear()
+        app.geometry.set_selection(())
+        for index, (kind, extra) in enumerate((("rounded", {"corner": 8}),
+                                               ("polygon", {"sides": 6}),
+                                               ("polygon", {"sides": 3}),
+                                               ("star", {"sides": 5, "corner": 0.45}),
+                                               ("star", {"sides": 8, "corner": 0.7}))):
+            app.geometry.document.shapes.append(
+                Shape(kind, 20 + index * 62, 90, 50, 50, **extra).validated())
+        app.geometry.refresh()
+        app.geometry.fit_view()
+        root.lift()
+        root.attributes("-topmost", True)
+        root.update_idletasks()
+        root.update()
+        time.sleep(0.9)
+        root.update()
+        box = (root.winfo_rootx(), root.winfo_rooty(),
+               root.winfo_rootx() + root.winfo_width(),
+               root.winfo_rooty() + root.winfo_height())
+        ImageGrab.grab(bbox=box).save(folder / "shapes.png")
+        written.append(("shapes", str(folder / "shapes.png"),
+                        "rounded, polygon, star"))
+
     def cards():
         for card in ("cut", "engrave"):
             app.geometry.document.shapes.clear()
@@ -2790,6 +2816,7 @@ def capture_import_previews(folder, image=None):
         try:
             capture_each()
             cards()
+            shapes_row()
         except Exception:
             import traceback
             traceback.print_exc()
