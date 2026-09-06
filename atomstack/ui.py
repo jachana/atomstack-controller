@@ -2592,9 +2592,13 @@ def capture_import_previews(folder, image=None):
                                        4, 1, 0.3)
             app.geometry.set_selection(())
             app.geometry.fit_view()
+            # The main window has to be in front, or this photographs whatever
+            # is: ImageGrab takes the screen, not the window's own pixels.
+            root.lift()
+            root.attributes("-topmost", True)
             root.update_idletasks()
             root.update()
-            time.sleep(0.6)
+            time.sleep(0.9)
             root.update()
             box = (root.winfo_rootx(), root.winfo_rooty(),
                    root.winfo_rootx() + root.winfo_width(),
