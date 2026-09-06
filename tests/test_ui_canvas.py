@@ -21,7 +21,7 @@ try:
 except ImportError:
     tk = None
 
-from atomstack.geometry import BED_X, BED_Y, Shape, shape_bounds
+from atomstack.geometry import BED_X, BED_Y, Shape, shape_bounds, shape_paths
 from atomstack.viewport import ROTATE_HANDLE
 
 NEWLINE = chr(10)
@@ -289,6 +289,29 @@ class CanvasBehaviour(unittest.TestCase):
         right = view.to_canvas(520, 0)[0]
         self.assertLessEqual(right, editor.bed.winfo_width())
 
+    def test_text_layout_settings_survive_selection_and_apply(self):
+        editor = self.app.geometry
+        original = Shape("text", 10, 10, 60, 30, text="TWO" + chr(10) + "LINES",
+                         line_spacing=2.0, letter_spacing=0.3, text_align="center")
+        editor.document.shapes.append(original)
+        editor.set_selection((0,), 0)
+        editor.refresh()
+        # The panel shows what the object actually carries.
+        self.assertEqual(editor.fields["text"].get(), "TWO" + chr(10) + "LINES")
+        self.assertEqual(editor.text_align.get(), "center")
+        self.assertEqual(editor.fields["line_spacing"].get(), "2")
+        self.assertEqual(editor.fields["letter_spacing"].get(), "0.3")
+        # Applying without touching anything must not quietly reset them.
+        editor.apply()
+        applied = editor.document.shapes[0]
+        self.assertEqual(applied.text, original.text)
+        self.assertEqual(applied.text_align, "center")
+        self.assertEqual(applied.line_spacing, 2.0)
+        self.assertEqual(applied.letter_spacing, 0.3)
+        # And the object really is laid out as two lines.
+        ys = sorted(y for path in shape_paths(applied) for _, y in path)
+        self.assertGreater(ys[-1] - ys[0], 20.0)
+
     def test_text_resize_handles_match_the_nominal_editable_box(self):
         editor = self.app.geometry
         text = Shape("text", 10, 20, 100, 30, text="I")
@@ -313,7 +336,7 @@ class CanvasBehaviour(unittest.TestCase):
             editor.design_path = save_path
             editor.save_design()
             saved = json.loads(save_path.read_text(encoding="utf-8"))
-            self.assertEqual(saved["version"], 4)
+            self.assertEqual(saved["version"], 5)
             self.assertEqual(saved["shapes"][0]["rotation"], 90)
             self.assertTrue(saved["shapes"][0]["mirror_x"])
             self.assertEqual(list(Path(folder).glob("*.tmp")), [],

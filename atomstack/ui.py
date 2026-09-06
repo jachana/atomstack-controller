@@ -13,6 +13,7 @@ from dataclasses import replace
 from .protocol import READ_COMMANDS
 from .transports import SerialTransport, Simulator, list_ports
 from .geometry import Document, Shape, BED_X, BED_Y, shape_bounds, shape_paths
+from .vector_text import ALIGNMENTS
 from .materials import MaterialLibrary, MaterialPreset
 from .viewport import (
     anchor_point, arrow_target, clamp_to_bed, clamp_zoom, corner_handles, fit_viewport,
@@ -574,6 +575,31 @@ class App:
             self.controller.message = str(exc)
 
 
+class MultiLineField:
+    """A Text widget with a StringVar's interface, so ``fields`` stays uniform."""
+
+    def __init__(self, parent, width=12, height=3):
+        self.widget = tk.Text(parent, width=width, height=height, wrap="word",
+                              font=("Segoe UI", 9), undo=True)
+
+    def get(self):
+        return self.widget.get("1.0", "end-1c")
+
+    def set(self, value):
+        if self.get() == value:
+            return
+        self.widget.delete("1.0", "end")
+        self.widget.insert("1.0", value)
+
+    def pack(self, **options):
+        self.widget.pack(**options)
+        return self
+
+    def __getattr__(self, name):
+        # configure, bind, cget and the rest belong to the widget itself.
+        return getattr(self.widget, name)
+
+
 class GeometryWindow:
     """Geometry editor; only the guarded frame action can request head motion."""
     def __init__(self, parent, controller, embedded=False):
@@ -801,14 +827,32 @@ class GeometryWindow:
             row = ttk.Frame(side)
             row.pack(fill="x")
             ttk.Label(row, text=label, width=17).pack(side="left")
-            entry = ttk.Entry(row, textvariable=self.fields[name], width=12)
-            entry.pack(side="right")
+            if name == "text":
+                # Text can span lines, so it needs a box rather than one row.
+                entry = MultiLineField(row).pack(side="right")
+                self.fields[name] = entry
+            else:
+                entry = ttk.Entry(row, textvariable=self.fields[name], width=12)
+                entry.pack(side="right")
             self.field_entries[name] = entry
         font_row = ttk.Frame(side)
         font_row.pack(fill="x", pady=1)
         ttk.Label(font_row, text="Text font", width=17).pack(side="left")
         self.font_combo = ttk.Combobox(font_row, textvariable=self.font_family, values=("Arial", "Segoe UI", "Consolas"), state="readonly", width=12)
         self.font_combo.pack(side="right")
+        align_row = ttk.Frame(side)
+        align_row.pack(fill="x", pady=1)
+        ttk.Label(align_row, text="Text align", width=17).pack(side="left")
+        self.text_align = tk.StringVar(value="left")
+        ttk.Combobox(align_row, textvariable=self.text_align, values=ALIGNMENTS,
+                     state="readonly", width=12).pack(side="right")
+        for label, variable, default in (("Line spacing · em", "line_spacing", "1.2"),
+                                         ("Letter spacing · em", "letter_spacing", "0.0")):
+            row = ttk.Frame(side)
+            row.pack(fill="x", pady=1)
+            ttk.Label(row, text=label, width=17).pack(side="left")
+            self.fields[variable] = tk.StringVar(value=default)
+            ttk.Entry(row, textvariable=self.fields[variable], width=12).pack(side="right")
         mirror_row = ttk.Frame(side)
         mirror_row.pack(fill="x", pady=(2, 0))
         self.mirror_x_button = ttk.Checkbutton(mirror_row, text="Flip H", variable=self.mirror_x)
@@ -1027,6 +1071,9 @@ class GeometryWindow:
                      int(self.fields["speed"].get()), int(self.fields["power"].get()), int(self.fields["passes"].get()),
                      self.fields["text"].get(), self.font_family.get(),
                      rotation=float(self.fields["rotation"].get()),
+                     line_spacing=float(self.fields["line_spacing"].get()),
+                     letter_spacing=float(self.fields["letter_spacing"].get()),
+                     text_align=self.text_align.get(),
                      mirror_x=self.mirror_x.get(), mirror_y=self.mirror_y.get(),
                      paths=self.document.shapes[self.selected].paths if self.selected is not None else (),
                      mode=self.document.shapes[self.selected].mode if self.selected is not None else "line",
@@ -1602,6 +1649,7 @@ class GeometryWindow:
             value = getattr(layer if layer and name in ("speed", "power", "passes") else shape, name)
             self.fields[name].set(f"{value:g}" if isinstance(value, (int, float)) else value)
         self.font_family.set(shape.font_family)
+        self.text_align.set(shape.text_align)
         self.mirror_x.set(shape.mirror_x)
         self.mirror_y.set(shape.mirror_y)
         self.update_bounds_text()

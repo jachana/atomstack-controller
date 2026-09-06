@@ -1,8 +1,8 @@
-PASS: 235 tests passed, 0 failed.
-Generated 2026-09-05T23:19:02Z from commit dccc039 on branch master.
+FAIL: 243 tests passed, 1 failed.
+Generated 2026-09-06T00:05:05Z from commit aa8ec80 on branch master.
 Working tree clean: no.
 Python 3.12.10 on Windows-11-10.0.26200-SP0.
-pytest summary: 235 passed in 2.44s
+pytest summary: 1 failed, 243 passed in 2.95s
 
 Packaged executables found in the delivery folder. This script
 does not build or launch them, so these hashes identify whatever

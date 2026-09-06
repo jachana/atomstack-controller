@@ -2,7 +2,7 @@
 from dataclasses import dataclass, replace
 from functools import lru_cache
 import math
-from .vector_text import FONT_FILES, text_paths
+from .vector_text import ALIGNMENTS, FONT_FILES, text_paths
 
 BED_X, BED_Y = 365.0, 305.0
 # Stand-in rapid rate for a preview taken before the machine has reported its
@@ -31,6 +31,9 @@ class Shape:
     paths: tuple = ()
     mode: str = "line"
     interval: float = 0.2
+    line_spacing: float = 1.2
+    letter_spacing: float = 0.0
+    text_align: str = "left"
 
     def __post_init__(self):
         object.__setattr__(self, "paths", tuple(tuple(tuple(point) for point in path) for path in self.paths))
@@ -55,10 +58,18 @@ class Shape:
         if not 1 <= self.passes <= 20:
             raise ValueError("Passes must be between 1 and 20.")
         if self.kind == "text":
-            if not self.text or not self.text.strip() or len(self.text) > 80:
-                raise ValueError("Text must contain 1–80 characters.")
-            if not all(character.isprintable() for character in self.text):
-                raise ValueError("Text must fit on one line and contain printable characters only.")
+            if not self.text or not self.text.strip() or len(self.text) > 200:
+                raise ValueError("Text must contain 1–200 characters.")
+            if len(self.text.splitlines()) > 20:
+                raise ValueError("Text can span at most 20 lines.")
+            if not all(character.isprintable() or character == chr(10) for character in self.text):
+                raise ValueError("Text must contain printable characters and line breaks only.")
+            if self.text_align not in ALIGNMENTS:
+                raise ValueError("Text alignment must be left, center, or right.")
+            if not math.isfinite(self.line_spacing) or not 0.5 <= self.line_spacing <= 4:
+                raise ValueError("Line spacing must be between 0.5 and 4 times the text size.")
+            if not math.isfinite(self.letter_spacing) or not -0.2 <= self.letter_spacing <= 2:
+                raise ValueError("Letter spacing must be between -0.2 and 2 times the text size.")
             if self.font_family not in FONT_FILES:
                 raise ValueError("Choose Arial, Segoe UI, or Consolas.")
         if self.mode not in ("line", "fill") or not math.isfinite(self.interval) or not 0.05 <= self.interval <= 5:
@@ -83,7 +94,9 @@ class Shape:
         if self.mirror_x or self.mirror_y:
             transform += " · mirrored"
         if self.kind == "text":
-            return f"Text · {self.text[:20]} · X {self.x:g} Y {self.y:g}{transform}"
+            # Show the break, or a two-line label reads as one run-on word.
+            preview = " / ".join(self.text.splitlines())[:20]
+            return f"Text · {preview} · X {self.x:g} Y {self.y:g}{transform}"
         if self.note:
             return f"Test · {self.note}"
         return f"{self.kind.title()} · X {self.x:g} Y {self.y:g} · {self.width:g} × {self.height:g}{transform}"
@@ -146,7 +159,7 @@ class Document:
 
     def to_payload(self):
         self.validate_layers()
-        return {"format": "atomstack-design", "version": 4,
+        return {"format": "atomstack-design", "version": 5,
                 "bed": {"width": BED_X, "height": BED_Y},
                 "shapes": [shape.validated().__dict__ for shape in self.shapes],
                 "layers": [layer.__dict__ for layer in self.layers]}
@@ -156,7 +169,7 @@ class Document:
         if not isinstance(data, dict) or data.get("format") != "atomstack-design" or not isinstance(data.get("shapes"), list):
             raise ValueError("This is not an Atomstack design file.")
         version = data.get("version", 1)
-        if type(version) is not int or version not in (1, 2, 3, 4):
+        if type(version) is not int or version not in (1, 2, 3, 4, 5):
             raise ValueError(f"Unsupported Atomstack design version: {version}.")
         document = cls()
         document.shapes = [Shape(**item).validated() for item in data["shapes"]]
@@ -234,7 +247,11 @@ class Document:
             index = source_index + 1
             shape.validated()
             paths = burn_paths(shape)
+            # Text may now span lines, and this goes inside a ';' comment:
+            # anything that is not printable would end the comment and put the
+            # rest of the operator's text on the wire as a command.
             safe_text = shape.text.encode("ascii", "replace").decode("ascii")
+            safe_text = "".join(c if c.isprintable() else " " for c in safe_text)
             description = f"text '{safe_text}'" if shape.kind == "text" else shape.kind
             lines.append(f"; {index}: {description} X{shape.x:g} Y{shape.y:g} {shape.width:g}x{shape.height:g} - F{shape.speed} S{shape.power} - {shape.passes} pass(es)")
             for pass_number in range(shape.passes):
@@ -302,7 +319,8 @@ def _base_shape_paths(shape):
     if shape.kind == "line":
         return [[(x, y), (x + w, y + h)]]
     if shape.kind == "text":
-        return text_paths(shape.text, x, y, w, h, shape.font_family)
+        return text_paths(shape.text, x, y, w, h, shape.font_family,
+                          shape.line_spacing, shape.letter_spacing, shape.text_align)
     cx, cy = x + w / 2, y + h / 2
     return [[(cx + w / 2 * math.cos(2 * math.pi * i / 72),
               cy + h / 2 * math.sin(2 * math.pi * i / 72)) for i in range(73)]]

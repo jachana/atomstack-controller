@@ -156,10 +156,24 @@ class GeometryTests(unittest.TestCase):
         self.assertIn("text 'ATOM 10'", code)
         self.assertEqual(code.count("M4 S250"), len(paths))
 
+    def test_multi_line_text_cannot_escape_the_gcode_comment(self):
+        """Text spans lines now, and the job writes it into a ';' comment."""
+        document = Document()
+        document.add(Shape("text", 10, 10, 40, 20, text="M3 S1000" + chr(10) + "G0 X999"))
+        for line in document.gcode((0, 0)).splitlines():
+            self.assertFalse(line.startswith(("M3", "G0 X999")), line)
+        comments = [l for l in document.gcode((0, 0)).splitlines() if "M3 S1000" in l]
+        self.assertTrue(comments)
+        for comment in comments:
+            self.assertTrue(comment.startswith(";"))
+            self.assertIn("G0 X999", comment)   # kept, on the same comment line
+
     def test_text_validation_rejects_empty_or_unknown_font(self):
         for shape in (Shape("text", 0, 0, 10, 5, text=""),
                       Shape("text", 0, 0, 10, 5, text="Hello", font_family="Unknown"),
-                      Shape("text", 0, 0, 10, 5, text="M3 S1000\n")):
+                      Shape("text", 0, 0, 10, 5, text="Hi", text_align="middle"),
+                      Shape("text", 0, 0, 10, 5, text="Hi", line_spacing=9.0),
+                      Shape("text", 0, 0, 10, 5, text="Hi", letter_spacing=-5.0)):
             with self.assertRaises(ValueError):
                 shape.validated()
 
