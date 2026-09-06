@@ -2503,6 +2503,8 @@ def main():
     parser.add_argument("--demo", action="store_true", help="Open simulator; no hardware is accessed")
     parser.add_argument("--port", help="Connect the explicitly selected port on launch; e.g. COM3")
     parser.add_argument("--report", help="Write a live JSON diagnostic snapshot to this file")
+    parser.add_argument("--open", metavar="FILE",
+                        help="Open an image, drawing or design on start, as Explorer would")
     parser.add_argument("--verify-features", help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.verify_features:
@@ -2542,5 +2544,8 @@ def main():
     if args.demo and args.port:
         parser.error("--demo and --port cannot be combined")
     root = tk.Tk()
-    App(root, args.demo, args.port, args.report)
+    app = App(root, args.demo, args.port, args.report)
+    if args.open:
+        # Same route a dropped file takes, so "Open with" and a drop agree.
+        root.after(400, lambda: app.geometry.accept_dropped([args.open]))
     root.mainloop()
