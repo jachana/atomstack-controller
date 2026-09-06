@@ -14,18 +14,38 @@ import math
 from .geometry import BED_X, BED_Y, Shape
 
 MAX_STEPS = 10
-LABEL_HEIGHT = 3.5          # Millimetres; smaller than this stops being legible.
-CHARACTER_WIDTH = 0.62      # Of the label height, near enough for layout.
+LABEL_HEIGHT = 5.0          # Millimetres. Outline text much smaller than this
+                            # reads as a smudge once it is burnt into grain.
+MIN_LABEL, MAX_LABEL = 4.0, 9.0
+LABEL_INTERVAL = 0.15       # Fill spacing: solid strokes, not hollow outlines.
+CHARACTER_WIDTH = 0.66      # Of the label height, near enough for layout.
 # The power labels sit to the left of the first column, so a card occupies this
 # much more bed than its cells do. Leaving it out of the fit check told the
 # operator a card fitted and then refused to send it.
-LEFT_MARGIN = LABEL_HEIGHT * CHARACTER_WIDTH * 4.5
+def left_margin(cell_height):
+    """Room the power labels need beside the first column."""
+    height = label_height(cell_height)
+    return height * CHARACTER_WIDTH * 4 + height * 0.6
+
+
+LEFT_MARGIN = LABEL_HEIGHT * CHARACTER_WIDTH * 4 + LABEL_HEIGHT * 0.6
 
 
 def _label(text, x, y, height, speed, power, font="Arial"):
+    """A filled label.
+
+    Outline text at this size leaves two hairlines per stroke, which on grain is
+    hard to read and easy to mistake for the grain itself. Filling it costs a
+    little time and gives a solid mark.
+    """
     width = max(height * CHARACTER_WIDTH * len(text), height)
     return Shape("text", x, y, width, height, speed=speed, power=power, passes=1,
-                 text=text, font_family=font)
+                 text=text, font_family=font, mode="fill", interval=LABEL_INTERVAL)
+
+
+def label_height(cell_height):
+    """Labels grow with the cells, within what stays legible and affordable."""
+    return min(MAX_LABEL, max(MIN_LABEL, cell_height * 0.32))
 
 
 def _check(speeds, powers, cell_width, cell_height, gap):
@@ -44,18 +64,23 @@ def _check(speeds, powers, cell_width, cell_height, gap):
 def _grid_labels(x, y, speeds, powers, cell_width, cell_height, gap,
                  label_speed, label_power, font):
     """Speeds along the top, powers down the left, and what they mean."""
+    height = label_height(cell_height)
+    margin = left_margin(cell_height)
     shapes = []
-    top = y + len(powers) * (cell_height + gap)
+    top = y + len(powers) * (cell_height + gap) - gap
     for column, speed in enumerate(speeds):
-        shapes.append(_label(f"{int(speed)}", x + column * (cell_width + gap),
-                             top + LABEL_HEIGHT, LABEL_HEIGHT,
-                             label_speed, label_power, font))
+        text = f"{int(speed)}"
+        width = max(height * CHARACTER_WIDTH * len(text), height)
+        # Centred over its column, so a label belongs to a column by eye.
+        shapes.append(_label(text, x + column * (cell_width + gap) + (cell_width - width) / 2,
+                             top + height * 0.6, height, label_speed, label_power, font))
     for row, power in enumerate(powers):
-        shapes.append(_label(f"{int(power)}", x - LEFT_MARGIN,
-                             y + row * (cell_height + gap) + cell_height / 2,
-                             LABEL_HEIGHT, label_speed, label_power, font))
-    shapes.append(_label("mm/min across   power down", x,
-                         top + LABEL_HEIGHT * 3, LABEL_HEIGHT,
+        text = f"{int(power)}"
+        width = max(height * CHARACTER_WIDTH * len(text), height)
+        shapes.append(_label(text, x - margin + (margin - width - height * 0.3),
+                             y + row * (cell_height + gap) + (cell_height - height) / 2,
+                             height, label_speed, label_power, font))
+    shapes.append(_label("F across  S down", x, top + height * 2.2, height * 0.8,
                          label_speed, label_power, font))
     return shapes
 
@@ -130,13 +155,15 @@ def engraving_card(x, y, speeds, powers, image=None, cell_width=16.0, cell_heigh
 
 def card_size(speeds, powers, cell_width, cell_height, gap):
     """How much bed a card takes, counting the labels on both axes."""
-    width = LEFT_MARGIN + len(speeds) * (cell_width + gap) - gap
-    height = len(powers) * (cell_height + gap) - gap + LABEL_HEIGHT * 5
+    label = label_height(cell_height)
+    width = left_margin(cell_height) + len(speeds) * (cell_width + gap) - gap
+    height = len(powers) * (cell_height + gap) - gap + label * 3.5
     return width, height
 
 
 def fits_bed(x, y, speeds, powers, cell_width, cell_height, gap):
     """Whether a card placed here stays on the bed, labels and all."""
     width, height = card_size(speeds, powers, cell_width, cell_height, gap)
-    return (x - LEFT_MARGIN >= 0 and y >= 0
-            and x - LEFT_MARGIN + width <= BED_X and y + height <= BED_Y)
+    margin = left_margin(cell_height)
+    return (x - margin >= 0 and y >= 0
+            and x - margin + width <= BED_X and y + height <= BED_Y)

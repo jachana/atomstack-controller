@@ -102,21 +102,21 @@ class EngravingCard(unittest.TestCase):
 
 class Layout(unittest.TestCase):
     def test_the_size_is_reported_before_the_card_is_made(self):
-        from atomstack.testcards import LEFT_MARGIN
+        from atomstack.testcards import left_margin
         width, height = card_size(SPEEDS, POWERS, 12, 12, 3)
         # The cells, plus the column of power labels beside them.
-        self.assertAlmostEqual(width, 3 * 15 - 3 + LEFT_MARGIN)
+        self.assertAlmostEqual(width, 3 * 15 - 3 + left_margin(12))
         self.assertGreater(height, 4 * 15 - 3)          # room for the labels
         self.assertTrue(fits_bed(20, 20, SPEEDS, POWERS, 12, 12, 3))
         self.assertFalse(fits_bed(BED_X - 10, 20, SPEEDS, POWERS, 12, 12, 3))
 
     def test_the_fit_check_counts_the_labels_beside_the_grid(self):
         """The power labels hang left of the first column and are still cut."""
-        from atomstack.testcards import LEFT_MARGIN
-        self.assertFalse(fits_bed(5, 20, SPEEDS, POWERS, 14, 14, 4))
-        self.assertTrue(fits_bed(LEFT_MARGIN + 1, 20, SPEEDS, POWERS, 14, 14, 4))
+        from atomstack.testcards import left_margin
+        self.assertFalse(fits_bed(2, 20, SPEEDS, POWERS, 14, 14, 4))
+        self.assertTrue(fits_bed(left_margin(14) + 1, 20, SPEEDS, POWERS, 14, 14, 4))
         # And what fits_bed accepts really does stay on the bed.
-        shapes = cut_card(LEFT_MARGIN + 1, 20, SPEEDS, POWERS,
+        shapes = cut_card(left_margin(14) + 1, 20, SPEEDS, POWERS,
                           cell_width=14, cell_height=14, gap=4)
         self.assertGreaterEqual(min(shape_bounds(s)[0] for s in shapes), 0)
 
