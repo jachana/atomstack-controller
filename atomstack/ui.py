@@ -2506,10 +2506,17 @@ def capture_import_previews(folder, image=None):
     front, so it takes its own picture instead, the way this project already
     generates its preview artifacts.
     """
+    import os
+    import tempfile
     import time
     from PIL import Image, ImageDraw, ImageGrab
 
     folder.mkdir(parents=True, exist_ok=True)
+    # Run against its own state directory. Otherwise this sees the operator's
+    # autosaved designs, offers to recover one, and waits forever on a dialog
+    # nobody is there to answer; it would also leave its own behind.
+    state = tempfile.mkdtemp(prefix="atomstack-verify-")
+    os.environ["ATOMSTACK_STATE_DIR"] = state
     source = Path(image) if image else folder / "verify-source.png"
     if not image:
         drawn = Image.new("L", (320, 240), 250)
@@ -2523,7 +2530,19 @@ def capture_import_previews(folder, image=None):
     written = []
 
     def run():
-        for mode, fields in (("outline", {"width": "80"}),
+        try:
+            capture_each()
+        except Exception:
+            # Whatever goes wrong, the loop has to be left, or the app hangs
+            # with no window to close and nothing written.
+            import traceback
+            traceback.print_exc()
+        finally:
+            root.quit()
+
+    def capture_each():
+        for mode, fields in (("outline", {"width": "80", "blur": "2",
+                                          "tolerance": "0.4", "min_area": "6"}),
                              ("edges", {"width": "80", "level": "0.12", "blur": "3",
                                         "tolerance": "0.3", "min_area": "4"}),
                              ("engrave", {"width": "80", "interval": "0.25"})):
@@ -2547,10 +2566,10 @@ def capture_import_previews(folder, image=None):
             written.append((mode, str(target), window.status.get()))
             window.window.destroy()
             root.update()
-        root.destroy()
 
     root.after(700, run)
     root.mainloop()
+    root.destroy()
     (folder / "import-previews.json").write_text(
         json.dumps([{"mode": m, "file": f, "status": s} for m, f, s in written], indent=2),
         encoding="utf-8")
