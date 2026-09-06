@@ -121,7 +121,16 @@ class CanvasBehaviour(unittest.TestCase):
         self.assertIn("outlined machine bed", self.app.controller.message)
         self.assertIsNone(self.app.controller.target)
 
-    def test_arrow_keys_buffer_nothing_before_a_confirmed_home(self):
+    def test_arrow_keys_buffer_nothing_without_a_confirmed_home(self):
+        """Connecting homes on its own, so put the session where a fault leaves it.
+
+        Relying on the shared app not having homed yet makes this a race with
+        the tick loop rather than a test of the guard.
+        """
+        controller = self.app.controller
+        controller.origin = None
+        controller.home_state = "Not homed"
+        self.app.pending_key_target = None
         self.app.arrow_jog("Right")
         self.assertIsNone(self.app.pending_key_target)
 
