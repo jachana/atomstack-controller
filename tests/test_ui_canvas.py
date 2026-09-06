@@ -447,6 +447,23 @@ class CanvasBehaviour(unittest.TestCase):
         self.assertEqual(tuple(editor.document.shapes), before)
         self.assertIn("not an image", editor.message.get())
 
+    def test_both_test_cards_are_placed_with_their_labels(self):
+        editor = self.app.geometry
+        for card, cell_kind in (("cut", "rectangle"), ("engrave", "raster")):
+            editor.document.shapes.clear()
+            editor.add_test_card(card, 15, 15, 12, 12, 3, 2, 600, 3000, 200, 600,
+                                 3, 1, 0.3)
+            kinds = [s.kind for s in editor.document.shapes]
+            self.assertEqual(kinds.count(cell_kind), 6, card)
+            # Speeds across, powers down, and the line explaining which is which.
+            self.assertEqual(kinds.count("text"), 3 + 2 + 1, card)
+            self.assertIn(f"{card} test card", editor.message.get())
+            burned = {s.text for s in editor.document.shapes if s.kind == "text"}
+            self.assertIn("600", burned)
+            self.assertIn("3000", burned)
+            editor.undo()
+            self.assertEqual(editor.document.shapes, [])
+
     def test_text_resize_handles_match_the_nominal_editable_box(self):
         editor = self.app.geometry
         text = Shape("text", 10, 20, 100, 30, text="I")

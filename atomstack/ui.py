@@ -1629,6 +1629,30 @@ class GeometryWindow:
             self.preview_window = JobPreviewWindow(self)
         self.act(open_window)
 
+    def add_test_card(self, card, x, y, width, height, columns, rows,
+                      min_speed, max_speed, min_power, max_power, gap, passes, interval):
+        """Build a cut or engraving card and place it as one undoable change."""
+        from .testcards import card_size, cut_card, engraving_card
+        if not 1 <= columns <= 10 or not 1 <= rows <= 10:
+            raise ValueError("Rows and columns must be between 1 and 10.")
+        steps = lambda low, high, count: [round(low + (high-low)*i/max(1, count-1))
+                                          for i in range(count)]
+        speeds = steps(min_speed, max_speed, columns)
+        powers = steps(min_power, max_power, rows)
+        maker = cut_card if card == "cut" else engraving_card
+        extra = {"passes": passes} if card == "cut" else {"interval": interval}
+        shapes = maker(x, y, speeds, powers, cell_width=width, cell_height=height,
+                       gap=gap, **extra)
+        self.checkpoint()
+        first = len(self.document.shapes)
+        for shape in shapes:
+            self.document.add(shape)
+        self.set_selection(range(first, len(self.document.shapes)))
+        span = card_size(speeds, powers, width, height, gap)
+        cells = columns * rows
+        self.refresh(f"Added a {card} test card: {cells} cells, "
+                     f"{span[0]:.0f} x {span[1]:.0f} mm, labelled with its speeds and powers.")
+
     def add_burn_test_values(self, x, y, width, height, columns, rows,
                              min_speed, max_speed, min_power, max_power, gap=2, passes=1, mode="line", interval=0.2):
         if not 1 <= columns <= 10 or not 1 <= rows <= 10:
@@ -2481,18 +2505,23 @@ class BurnTestWindow:
         self.mode = tk.StringVar(value="line")
         ttk.Label(frame, text="Test mode").grid(row=14, column=0, sticky="w")
         ttk.Combobox(frame, textvariable=self.mode, values=("line", "fill"), state="readonly", width=10).grid(row=14, column=1)
-        self.message = tk.StringVar(value="Each cell keeps its own settings. Compare the result, select the best cell, then save its material preset.")
-        ttk.Label(frame, textvariable=self.message, style="Quiet.TLabel", wraplength=300).grid(row=15, column=0, columnspan=2, sticky="w", pady=(10, 8))
-        ttk.Button(frame, text="Add test grid", command=self.add).grid(row=16, column=0, columnspan=2, sticky="ew")
+        self.card = tk.StringVar(value="cut")
+        ttk.Label(frame, text="Card type").grid(row=15, column=0, sticky="w", pady=(6, 0))
+        ttk.Combobox(frame, textvariable=self.card, values=("cut", "engrave"),
+                     state="readonly", width=10).grid(row=15, column=1, pady=(6, 0))
+        self.message = tk.StringVar(value="Cells carry their own settings, and the speeds and powers are cut onto the card so it can still be read once it is off the machine.")
+        ttk.Label(frame, textvariable=self.message, style="Quiet.TLabel", wraplength=300).grid(row=16, column=0, columnspan=2, sticky="w", pady=(10, 8))
+        ttk.Button(frame, text="Add test card", command=self.add).grid(row=17, column=0, columnspan=2, sticky="ew")
 
     def add(self):
         try:
             number = lambda name: float(self.values[name].get())
             integer = lambda name: int(self.values[name].get())
-            self.editor.add_burn_test_values(number("x"), number("y"), number("width"), number("height"),
-                                             integer("columns"), integer("rows"), integer("min_speed"),
-                                             integer("max_speed"), integer("min_power"), integer("max_power"),
-                                             number("gap"), integer("passes"), self.mode.get(), number("interval"))
+            self.editor.add_test_card(
+                self.card.get(), number("x"), number("y"), number("width"), number("height"),
+                integer("columns"), integer("rows"), integer("min_speed"), integer("max_speed"),
+                integer("min_power"), integer("max_power"), number("gap"), integer("passes"),
+                number("interval"))
             self.window.destroy()
         except (ValueError, IndexError) as exc:
             self.message.set(str(exc))
@@ -2529,17 +2558,6 @@ def capture_import_previews(folder, image=None):
     app = App(root, demo=True)
     written = []
 
-    def run():
-        try:
-            capture_each()
-        except Exception:
-            # Whatever goes wrong, the loop has to be left, or the app hangs
-            # with no window to close and nothing written.
-            import traceback
-            traceback.print_exc()
-        finally:
-            root.quit()
-
     def capture_each():
         for mode, fields in (("outline", {"width": "80", "blur": "2",
                                           "tolerance": "0.4", "min_area": "6"}),
@@ -2567,7 +2585,35 @@ def capture_import_previews(folder, image=None):
             window.window.destroy()
             root.update()
 
-    root.after(700, run)
+    def cards():
+        for card in ("cut", "engrave"):
+            app.geometry.document.shapes.clear()
+            app.geometry.add_test_card(card, 20, 20, 14, 14, 4, 4, 600, 6000, 150, 900,
+                                       4, 1, 0.3)
+            app.geometry.set_selection(())
+            app.geometry.fit_view()
+            root.update_idletasks()
+            root.update()
+            time.sleep(0.6)
+            root.update()
+            box = (root.winfo_rootx(), root.winfo_rooty(),
+                   root.winfo_rootx() + root.winfo_width(),
+                   root.winfo_rooty() + root.winfo_height())
+            ImageGrab.grab(bbox=box).save(folder / f"card-{card}.png")
+            written.append((f"{card} card", str(folder / f"card-{card}.png"),
+                            app.geometry.message.get()))
+
+    def everything():
+        try:
+            capture_each()
+            cards()
+        except Exception:
+            import traceback
+            traceback.print_exc()
+        finally:
+            root.quit()
+
+    root.after(700, everything)
     root.mainloop()
     root.destroy()
     (folder / "import-previews.json").write_text(
