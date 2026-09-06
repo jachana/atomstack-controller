@@ -903,6 +903,8 @@ class GeometryWindow:
         self.layer_window = LayerWindow(self, parent=self.layer_panel)
         self.refresh_frame_controls()
         self.window.after(10000, self.autosave_tick)
+        from .dropfiles import enable as enable_drops
+        self.drops_enabled = enable_drops(self.window, self.accept_dropped)
         self.window.after(1200, self.offer_recovery)
 
     def dirty(self):
@@ -993,6 +995,26 @@ class GeometryWindow:
     def import_dxf(self):
         self.import_vectors("DXF", (("DXF drawings", "*.dxf"),))
 
+    def accept_dropped(self, paths):
+        """Open what was dropped on the window, by what it is.
+
+        One file is what an operator means; the rest are ignored rather than
+        opened at once, because opening four designs would discard three.
+        """
+        from .dropfiles import classify
+        for kind, path in classify(paths):
+            if kind == "image":
+                ImageImportWindow(self, Path(path))
+            elif kind in ("svg", "dxf"):
+                self.import_vectors(kind.upper(), path=str(path))
+            elif kind == "design":
+                self.open_design(str(path))
+            else:
+                self.message.set(f"{Path(path).name} is not an image, drawing or design.")
+                continue
+            return
+        self.window.focus_force()
+
     def import_image(self):
         path = filedialog.askopenfilename(
             parent=self.window, title="Import image",
@@ -1009,9 +1031,13 @@ class GeometryWindow:
         self.fit_view()
         self.refresh(description)
 
-    def import_vectors(self, kind, filetypes):
-        """Both importers return bed-millimetre shapes, so the rest is shared."""
-        path = filedialog.askopenfilename(parent=self.window, title=f"Import {kind}", filetypes=filetypes)
+    def import_vectors(self, kind, filetypes=(), path=None):
+        """Both importers return bed-millimetre shapes, so the rest is shared.
+
+        ``path`` skips the dialog, for a file that arrived by being dropped.
+        """
+        path = path or filedialog.askopenfilename(parent=self.window,
+                                                  title=f"Import {kind}", filetypes=filetypes)
         if not path:
             return
         if kind == "SVG":
@@ -2193,7 +2219,11 @@ class ImageImportWindow:
         ttk.Checkbutton(outer, text="Invert (cut the light areas instead)",
                         variable=self.invert).pack(anchor="w", pady=(4, 0))
 
-        self.status = tk.StringVar(value="Choose settings, then Trace.")
+        self.preview = tk.Canvas(outer, width=300, height=200, highlightthickness=1,
+                                 highlightbackground="#aebdc4", background="#eef3f6")
+        self.preview.pack(pady=(10, 4))
+        self.preview_image = None      # Tk drops an image nothing holds.
+        self.status = tk.StringVar(value="Showing the picture. Trace to see what will be cut.")
         ttk.Label(outer, textvariable=self.status, style="Quiet.TLabel",
                   wraplength=320, justify="left").pack(anchor="w", pady=(10, 6))
         actions = ttk.Frame(outer)
@@ -2203,6 +2233,47 @@ class ImageImportWindow:
                                      state="disabled")
         self.add_button.pack(side="left", padx=6)
         ttk.Button(actions, text="Cancel", command=self.window.destroy).pack(side="right")
+        self.mode.trace_add("write", lambda *_: self.show_source())
+        self.show_source()
+
+    def draw_preview(self, picture):
+        """Fit a greyscale preview into the pane."""
+        from PIL import Image, ImageTk
+        width, height = int(self.preview["width"]), int(self.preview["height"])
+        fitted = picture.copy()
+        fitted.thumbnail((width - 4, height - 4), Image.LANCZOS)
+        self.preview_image = ImageTk.PhotoImage(fitted)
+        self.preview.delete("all")
+        self.preview.create_image(width // 2, height // 2, image=self.preview_image)
+
+    def show_source(self):
+        """What the file looks like, before any of the settings are applied."""
+        try:
+            from PIL import Image, ImageOps
+            with Image.open(self.path) as opened:
+                self.draw_preview(ImageOps.exif_transpose(opened).convert("L"))
+        except Exception as exc:
+            self.preview.delete("all")
+            self.preview.create_text(150, 100, text=str(exc), width=280)
+
+    def show_result(self):
+        """What the machine would actually do with the current settings."""
+        from PIL import Image, ImageDraw
+        from .raster import decode
+        shape = self.shapes[0]
+        scale = 300 / max(shape.width, 1e-6)
+        canvas = Image.new("L", (300, max(1, int(shape.height * scale))), 255)
+        if shape.kind == "raster":
+            grid = decode(shape.image)
+            canvas = Image.fromarray((grid * 255).astype("uint8"), mode="L")
+        else:
+            pen = ImageDraw.Draw(canvas)
+            for path in shape.paths:
+                points = [(x * shape.width * scale,
+                           (1 - y) * shape.height * scale) for x, y in path]
+                if len(points) > 1:
+                    pen.line(points, fill=0, width=1)
+        self.draw_preview(canvas)
 
     def values(self):
         numbers = {}
@@ -2236,6 +2307,7 @@ class ImageImportWindow:
                     f"{shape.width:.0f} x {shape.height:.0f} mm · sweeps "
                     f"{metrics['burn_distance']/1000:.1f} m, about "
                     f"{metrics['seconds']/60:.0f} min of engraving.")
+                self.show_result()
                 self.add_button.configure(state="normal")
                 return
             self.shapes = image_shapes(
@@ -2250,6 +2322,7 @@ class ImageImportWindow:
             self.status.set(f"{outlines} outlines · {points} points · "
                             f"{right-left:.1f} x {top-bottom:.1f} mm. "
                             "Add it, or change the settings and trace again.")
+            self.show_result()
             self.add_button.configure(state="normal")
         except (ValueError, OSError) as exc:
             self.shapes = ()

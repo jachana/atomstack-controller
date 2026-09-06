@@ -416,6 +416,37 @@ class CanvasBehaviour(unittest.TestCase):
                 if window.window.winfo_exists():
                     window.window.destroy()
 
+    def test_dropped_files_are_routed_by_what_they_are(self):
+        from atomstack.dropfiles import classify
+        self.assertEqual([kind for kind, _ in classify(
+            ["a.png", "b.JPG", "c.svg", "d.dxf", "e.atomdesign", "f.txt"])],
+            ["image", "image", "svg", "dxf", "design", "unknown"])
+
+    def test_dropping_a_drawing_imports_it_without_a_dialog(self):
+        editor = self.app.geometry
+        before = len(editor.document.shapes)
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "dropped.dxf"
+            path.write_text(dxf_document((0, "SECTION"), (2, "ENTITIES"),
+                                        (0, "LWPOLYLINE"), (90, 4), (70, 1),
+                                        (10, 0), (20, 0), (10, 25), (20, 0),
+                                        (10, 25), (20, 15), (10, 0), (20, 15),
+                                        (0, "ENDSEC"), (0, "EOF")), encoding="utf-8")
+            # No file dialog is patched: a drop must not open one.
+            editor.accept_dropped([str(path)])
+        self.assertEqual(len(editor.document.shapes), before + 1)
+        self.assertEqual(shape_bounds(editor.document.shapes[-1]), (0, 0, 25, 15))
+
+    def test_dropping_something_unusable_says_so_and_changes_nothing(self):
+        editor = self.app.geometry
+        before = tuple(editor.document.shapes)
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "notes.txt"
+            path.write_text("not a design", encoding="utf-8")
+            editor.accept_dropped([str(path)])
+        self.assertEqual(tuple(editor.document.shapes), before)
+        self.assertIn("not an image", editor.message.get())
+
     def test_text_resize_handles_match_the_nominal_editable_box(self):
         editor = self.app.geometry
         text = Shape("text", 10, 20, 100, 30, text="I")
