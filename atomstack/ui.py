@@ -717,6 +717,7 @@ class GeometryWindow:
         production = tk.Menu(self.window, tearoff=False)
         production.add_command(label="Array copies…", command=self.create_array)
         production.add_command(label="Offset outline…", command=self.create_offset)
+        production.add_command(label="Weld selection", command=self.weld_selection)
         production.add_command(label="Align left edges", command=lambda: self.align_selection("left"))
         production.add_command(label="Align horizontal centers", command=lambda: self.align_selection("center_x"))
         production.add_command(label="Align bottom edges", command=lambda: self.align_selection("bottom"))
@@ -1026,6 +1027,22 @@ class GeometryWindow:
             self.set_selection(range(start, start+len(copies)))
             self.refresh(f"Added {len(copies)} array objects.")
         self.act(apply_array)
+
+    def weld_selection(self):
+        from .production import weld_shapes
+
+        def merge():
+            indices = self.selected_indices()
+            if len(indices) < 2:
+                raise ValueError("Select two or more overlapping objects to weld.")
+            welded = weld_shapes([self.document.shapes[index] for index in indices])
+            self.checkpoint()
+            for index in sorted(indices, reverse=True):
+                self.document.delete(index)
+            position = self.document.add(welded)
+            self.set_selection((position,), position)
+            self.refresh(f"Welded {len(indices)} objects into one outline.")
+        self.act(merge)
 
     def create_offset(self):
         from .production import offset_shape

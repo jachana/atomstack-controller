@@ -2,6 +2,7 @@
 from dataclasses import replace
 import math
 from .geometry import Shape, shape_bounds, shape_paths, path_shape
+from .welding import weld
 
 
 def array_copies(shapes, columns, rows, gap_x, gap_y):
@@ -56,3 +57,13 @@ def offset_shape(shape, distance):
         result.append(new+[new[0]])
     return path_shape(result,speed=shape.speed,power=shape.power,passes=shape.passes,
                       layer=shape.layer,mode=shape.mode,interval=shape.interval)
+
+
+def weld_shapes(shapes):
+    """Merge overlapping objects into one outline that cuts each edge once."""
+    if len(shapes) < 2:
+        raise ValueError('Select two or more objects to weld.')
+    loops = weld([[list(path) for path in shape_paths(shape)] for shape in shapes])
+    first = shapes[0]
+    return path_shape(loops, speed=first.speed, power=first.power, passes=first.passes,
+                      layer=first.layer, mode=first.mode, interval=first.interval)

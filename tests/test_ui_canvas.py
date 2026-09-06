@@ -321,6 +321,31 @@ class CanvasBehaviour(unittest.TestCase):
         ys = sorted(y for path in shape_paths(applied) for _, y in path)
         self.assertGreater(ys[-1] - ys[0], 20.0)
 
+    def test_welding_two_overlapping_objects_replaces_them_with_one(self):
+        editor = self.app.geometry
+        editor.document.shapes.append(Shape("rectangle", 10, 10, 40, 40))
+        editor.document.shapes.append(Shape("rectangle", 30, 30, 40, 40))
+        editor.set_selection((0, 1), 1)
+        editor.weld_selection()
+        self.assertEqual(len(editor.document.shapes), 1)
+        welded = editor.document.shapes[0]
+        self.assertEqual(welded.kind, "path")
+        self.assertEqual(shape_bounds(welded), (10, 10, 70, 70))
+        self.assertIn("Welded 2 objects", editor.message.get())
+        # One object cut once: the overlap contributes no interior edge.
+        self.assertEqual(len(welded.paths), 1)
+        editor.undo()
+        self.assertEqual(len(editor.document.shapes), 2)
+
+    def test_welding_needs_a_real_selection_and_leaves_the_design_alone(self):
+        editor = self.app.geometry
+        editor.document.shapes.append(Shape("rectangle", 10, 10, 20, 20))
+        editor.set_selection((0,), 0)
+        before = tuple(editor.document.shapes)
+        editor.weld_selection()
+        self.assertEqual(tuple(editor.document.shapes), before)
+        self.assertIn("two or more", editor.message.get())
+
     def test_text_resize_handles_match_the_nominal_editable_box(self):
         editor = self.app.geometry
         text = Shape("text", 10, 20, 100, 30, text="I")
