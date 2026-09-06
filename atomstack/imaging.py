@@ -274,3 +274,20 @@ def resample(grey, columns, rows):
     picture = Image.fromarray((np.clip(grey, 0, 1) * 255).astype(np.uint8), mode="L")
     resized = picture.resize((int(columns), int(rows)), Image.BOX)
     return np.asarray(resized, dtype=np.float32) / 255.0
+
+
+def engraving_shape(path, width_mm=100.0, interval=0.2, brightness=0.0, contrast=1.0,
+                    gamma=1.0, invert=False, **settings):
+    """One raster object carrying the picture, sized to the width asked for."""
+    grey = adjust(load_grayscale(path), brightness, contrast, gamma, invert)
+    if not math.isfinite(width_mm) or not 1 <= width_mm <= 2000:
+        raise ValueError("Image width must be between 1 and 2000 mm.")
+    from .geometry import Shape
+    from .raster import encode, engraving_grid
+    height, width = grey.shape
+    height_mm = width_mm * height / width      # Never stretched.
+    box = (0.0, 0.0, width_mm, height_mm)
+    # Store it at the resolution it will be engraved at, not the camera's.
+    stored = engraving_grid(grey, box, interval)
+    return Shape("raster", 0.0, 0.0, width_mm, height_mm, image=encode(stored),
+                 interval=interval, **settings).validated()

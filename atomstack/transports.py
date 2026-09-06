@@ -68,8 +68,11 @@ class Simulator:
     JOG_RELATIVE = re.compile(r"\$J=G21 G91 ([XYZ])(-?\d+(?:\.\d+)?) F(\d+(?:\.\d+)?)")
     JOG_ABSOLUTE = re.compile(
         r"\$J=G21 G90 G53 X(-?\d+(?:\.\d+)?) Y(-?\d+(?:\.\d+)?) F(\d+(?:\.\d+)?)")
+    # S is a modal word: GRBL takes it on the move itself, which is how an
+    # engraving varies power without stopping between marks.
     MOVE = re.compile(
-        r"G53 G([01]) X(-?\d+(?:\.\d+)?) Y(-?\d+(?:\.\d+)?)(?: F(\d+(?:\.\d+)?))?")
+        r"G53 G([01]) X(-?\d+(?:\.\d+)?) Y(-?\d+(?:\.\d+)?)"
+        r"(?: F(\d+(?:\.\d+)?))?(?: S(\d+))?")
     SPINDLE = re.compile(r"M([34]) S(\d+)")
 
     PLANNER_BLOCKS = 16  # GRBL 1.1 BLOCK_BUFFER_SIZE.
@@ -266,6 +269,8 @@ class Simulator:
         move = self.MOVE.fullmatch(command)
         if move:
             feed = float(move[4]) if move[4] else self.max_feed
+            if move[5] is not None:
+                self.power = min(int(move[5]), int(self.max_power))
             return self.go(float(move[2]), float(move[3]), feed)
 
         absolute = self.JOG_ABSOLUTE.fullmatch(command)

@@ -2012,6 +2012,37 @@ class GeometryWindow:
             self.refresh(f"Moved {len(indices)} object{'s' if len(indices) != 1 else ''} by X {dx:g}, Y {dy:g}.")
         return "break"
 
+    def draw_raster(self, shape, x0, y0, scale):
+        """Show the picture on the bed, not just the box it occupies.
+
+        Placing an engraving means seeing it. If the preview cannot be built for
+        any reason the outline still draws, so the object never disappears.
+        """
+        try:
+            from PIL import Image, ImageTk
+            from .raster import decode
+            width = max(1, int(shape.width * scale))
+            height = max(1, int(shape.height * scale))
+            if width * height > 4_000_000:
+                return
+            grey = decode(shape.image)
+            picture = Image.fromarray((grey * 255).astype("uint8"), mode="L")
+            picture = picture.resize((width, height), Image.BILINEAR)
+            if shape.mirror_x:
+                picture = picture.transpose(Image.FLIP_LEFT_RIGHT)
+            if shape.mirror_y:
+                picture = picture.transpose(Image.FLIP_TOP_BOTTOM)
+            if shape.rotation % 360:
+                picture = picture.rotate(shape.rotation, expand=True,
+                                         resample=Image.BILINEAR, fillcolor=255)
+            photo = ImageTk.PhotoImage(picture)
+            self.raster_images.append(photo)
+            centre = (shape.x + shape.width / 2, shape.y + shape.height / 2)
+            self.bed.create_image(x0 + centre[0] * scale, y0 - centre[1] * scale,
+                                  image=photo, tags=("raster-preview",))
+        except Exception:
+            pass
+
     def draw(self):
         self.bed.delete("all")
         x0, y0, scale = self.transform()
@@ -2046,7 +2077,10 @@ class GeometryWindow:
                 self.bed.create_oval(cx-4,cy-4,cx+4,cy+4,outline=color,width=2,tags=("beam-position",))
                 self.bed.create_text(cx,cy-12,text=label,fill=color,tags=("beam-position",))
         selected_indices = set(self.selected_indices())
+        self.raster_images = []          # Tk drops an image it holds no reference to.
         for index, shape in enumerate(self.document.shapes):
+            if shape.kind == "raster":
+                self.draw_raster(shape, x0, y0, scale)
             layer = next((l for l in self.document.layers if l.name == shape.layer), None)
             color, width = ("#155eef", 3) if index in selected_indices else ("#aab3bf" if layer and not layer.enabled else "#405864", 2)
             for path in shape_paths(shape):
@@ -2138,9 +2172,12 @@ class ImageImportWindow:
                         value="outline").pack(side="left")
         ttk.Radiobutton(row, text="Edges", variable=self.mode,
                         value="edges").pack(side="left", padx=8)
+        ttk.Radiobutton(row, text="Engrave", variable=self.mode,
+                        value="engrave").pack(side="left", padx=8)
 
         self.fields = {}
         for label, name, value in (("Width · mm", "width", "100"),
+                                   ("Engrave lines · mm", "interval", "0.2"),
                                    ("Threshold · blank = auto", "level", ""),
                                    ("Blur · pixels", "blur", "0"),
                                    ("Brightness · -1 to 1", "brightness", "0"),
@@ -2178,9 +2215,29 @@ class ImageImportWindow:
         return numbers
 
     def trace(self):
-        from .imaging import image_shapes
+        from .imaging import engraving_shape, image_shapes
         try:
             values = self.values()
+            if self.mode.get() == "engrave":
+                shape = engraving_shape(
+                    self.path, width_mm=values["width"], interval=values["interval"],
+                    brightness=values["brightness"], contrast=values["contrast"],
+                    invert=self.invert.get(),
+                    speed=int(self.editor.fields["speed"].get()),
+                    power=int(self.editor.fields["power"].get()))
+                self.shapes = [shape]
+                from .raster import decode, engraving_metrics, quantise, scan_runs, RASTER_LEVELS
+                grid = decode(shape.image)
+                rows = scan_runs(quantise(grid, RASTER_LEVELS, 0, shape.power),
+                                 (shape.x, shape.y, shape.width, shape.height), shape.interval)
+                metrics = engraving_metrics(rows, shape.speed)
+                self.status.set(
+                    f"{metrics['rows']} lines · {metrics['runs']} moves · "
+                    f"{shape.width:.0f} x {shape.height:.0f} mm · sweeps "
+                    f"{metrics['burn_distance']/1000:.1f} m, about "
+                    f"{metrics['seconds']/60:.0f} min of engraving.")
+                self.add_button.configure(state="normal")
+                return
             self.shapes = image_shapes(
                 self.path, width_mm=values["width"], mode=self.mode.get(),
                 level=values["level"], blur_radius=values["blur"],
@@ -2201,6 +2258,11 @@ class ImageImportWindow:
 
     def add(self):
         if not self.shapes:
+            return
+        if self.shapes[0].kind == "raster":
+            self.editor.place_imported(
+                self.shapes, f"Placed an engraving of {self.path.name}.")
+            self.window.destroy()
             return
         outlines = sum(len(shape.paths) for shape in self.shapes)
         self.editor.place_imported(

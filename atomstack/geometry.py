@@ -31,6 +31,7 @@ class Shape:
     paths: tuple = ()
     mode: str = "line"
     interval: float = 0.2
+    image: str = ""        # Base64 PNG of the greys to engrave, for kind "raster".
     line_spacing: float = 1.2
     letter_spacing: float = 0.0
     text_align: str = "left"
@@ -44,12 +45,17 @@ class Shape:
         values = (self.x, self.y, self.width, self.height)
         if not all(math.isfinite(v) for v in values):
             raise ValueError("Geometry values must be finite numbers.")
-        if self.kind not in ("rectangle", "circle", "line", "text", "path"):
+        if self.kind not in ("rectangle", "circle", "line", "text", "path", "raster"):
             raise ValueError("Unknown geometry type.")
-        if self.kind in ("line", "path"):
+        if self.kind == "raster":
+            if not self.image or not isinstance(self.image, str):
+                raise ValueError("An engraved image needs its picture stored with it.")
+            if self.width <= 0 or self.height <= 0:
+                raise ValueError("Width and height must be greater than zero.")
+        elif self.kind in ("line", "path"):
             if self.width < 0 or self.height < 0 or (self.width == 0 and self.height == 0):
                 raise ValueError("A line needs a non-zero horizontal or vertical length.")
-        elif self.width <= 0 or self.height <= 0:
+        elif self.kind != "raster" and (self.width <= 0 or self.height <= 0):
             raise ValueError("Width and height must be greater than zero.")
         if not 60 <= self.speed <= 20000:
             raise ValueError("Speed must be between 60 and 20,000 mm/min.")
@@ -335,7 +341,7 @@ class Document:
         for source_index, shape in output:
             index = source_index + 1
             shape.validated()
-            paths = burn_paths(shape)
+            paths = () if shape.kind == "raster" else burn_paths(shape)
             # Text may now span lines, and this goes inside a ';' comment:
             # anything that is not printable would end the comment and put the
             # rest of the operator's text on the wire as a command.
@@ -343,6 +349,12 @@ class Document:
             safe_text = "".join(c if c.isprintable() else " " for c in safe_text)
             description = f"text '{safe_text}'" if shape.kind == "text" else shape.kind
             lines.append(f"; {index}: {description} X{shape.x:g} Y{shape.y:g} {shape.width:g}x{shape.height:g} - F{shape.speed} S{shape.power} - {shape.passes} pass(es)")
+            if shape.kind == "raster":
+                from .raster import shape_commands
+                for pass_number in range(shape.passes):
+                    lines.append(f"; pass {pass_number + 1}")
+                    lines.extend(shape_commands(shape, machine_origin, shape.speed))
+                continue
             for pass_number in range(shape.passes):
                 lines.append(f"; pass {pass_number + 1}")
                 for points in paths:
@@ -401,6 +413,10 @@ def path_points(shape):
 
 def _base_shape_paths(shape):
     x, y, w, h = shape.x, shape.y, shape.width, shape.height
+    if shape.kind == "raster":
+        # An engraving is swept, not traced, but its box is what everything
+        # else needs: bounds, selection, the frame outline and placement.
+        return [[(x, y), (x + w, y), (x + w, y + h), (x, y + h), (x, y)]]
     if shape.kind == "path":
         return [[(x+px*w, y+py*h) for px, py in path] for path in shape.paths]
     if shape.kind == "rectangle":

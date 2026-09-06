@@ -32,6 +32,14 @@ class GuardError(RuntimeError):
     pass
 
 
+def _commanded_power(command):
+    """Power a job command asks for, whether it arms or engraves."""
+    if command.startswith("M4 S"):
+        return int(command.split("S", 1)[1])
+    marked = re.search(r" S(\d+)$", command)
+    return int(marked[1]) if marked and command.startswith("G53 G1") else 0
+
+
 @dataclass
 class Command:
     text: str
@@ -473,7 +481,10 @@ class Controller:
         power = re.fullmatch(r"M4 S(\d+)", command)
         if power and 0 <= int(power[1]) <= self.settings.get(30, 0):
             return None, 0.0
-        move = re.fullmatch(r"G53 G([01]) X(-?\d+(?:\.\d+)?) Y(-?\d+(?:\.\d+)?)(?: F(\d+))?", command)
+        # Engraving carries power on the move itself, so the beam follows the
+        # picture instead of changing only between stops.
+        move = re.fullmatch(r"G53 G([01]) X(-?\d+(?:\.\d+)?) Y(-?\d+(?:\.\d+)?)"
+                            r"(?: F(\d+))?(?: S(\d+))?", command)
         if not move:
             raise GuardError(f"Generated job contains an unsupported command: {command}")
         machine = (float(move[2]), float(move[3]))
@@ -485,6 +496,11 @@ class Controller:
             raise GuardError("Generated job puts the cutting beam outside the bed after alignment.")
         if move[1] == "1" and (not move[4] or not 60 <= int(move[4]) <= self.max_xy_feed):
             raise GuardError("Generated job feed exceeds the live machine limit.")
+        if move[5] is not None:
+            if move[1] != "1":
+                raise GuardError("Generated job puts laser power on a rapid move.")
+            if not 0 <= int(move[5]) <= self.settings.get(30, 0):
+                raise GuardError("Generated job exceeds the machine's power limit.")
         feed = int(move[4]) if move[4] else self.max_xy_feed
         return machine, self._move_seconds(math.dist(position, machine), feed) if position else 0.0
 
@@ -521,9 +537,9 @@ class Controller:
             # Power is raised as soon as a command is queued and lowered only
             # once one is acknowledged, so the expected value always covers
             # everything the machine could currently be executing.
-            if command.startswith("M4 S"):
-                self.job_expected_power = max(self.job_expected_power,
-                                              int(command.split("S", 1)[1]))
+            raised = _commanded_power(command)
+            if raised:
+                self.job_expected_power = max(self.job_expected_power, raised)
             self.phase = "job-command"
             # GRBL acknowledges a move when it is parsed into the planner, so on
             # a full buffer this acknowledgement waits for a block to finish. The
@@ -545,8 +561,7 @@ class Controller:
         """Power the machine could still be asked for, from what is not yet done."""
         waiting = [item.text for item in self.inflight] + [item.text for item in self.queue]
         waiting += list(self.job_commands)
-        powers = [int(text.split("S", 1)[1]) for text in waiting if text.startswith("M4 S")]
-        return max(powers, default=0)
+        return max((_commanded_power(text) for text in waiting), default=0)
 
     def pause_job(self):
         if not self.connected or not self.phase.startswith("job") or self.job_paused:

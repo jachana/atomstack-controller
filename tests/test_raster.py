@@ -9,8 +9,11 @@ import unittest
 
 import numpy as np
 
-from atomstack.raster import (MAX_INTERVAL, MIN_INTERVAL, engraving_grid,
-                              engraving_metrics, quantise, scan_runs)
+from atomstack.controller import Controller, GuardError
+from atomstack.geometry import Document, Shape
+from atomstack.raster import (MAX_INTERVAL, MIN_INTERVAL, decode, encode, engraving_grid,
+                              engraving_metrics, quantise, scan_runs, shape_commands)
+from atomstack.transports import Simulator
 
 
 class Quantising(unittest.TestCase):
@@ -106,6 +109,96 @@ class Grid(unittest.TestCase):
         self.assertEqual(metrics["rows"], 10)
         self.assertAlmostEqual(metrics["burn_distance"], 600, places=6)
         self.assertAlmostEqual(metrics["seconds"], 600 / 3000 * 60, places=6)
+
+
+
+def ramp(size=32):
+    return np.linspace(0, 1, size, dtype=np.float32)[None, :].repeat(size, 0)
+
+
+class StoredWithTheDesign(unittest.TestCase):
+    def test_the_picture_survives_being_saved_and_reopened(self):
+        original = ramp()
+        shape = Shape("raster", 10, 10, 30, 30, image=encode(original), interval=1.0)
+        document = Document()
+        document.add(shape)
+        import json
+        reloaded = Document.from_payload(json.loads(json.dumps(document.to_payload())))
+        restored = decode(reloaded.shapes[0].image)
+        self.assertEqual(restored.shape, original.shape)
+        self.assertLess(float(np.abs(restored - original).max()), 0.01)
+
+    def test_an_engraving_without_its_picture_is_refused(self):
+        with self.assertRaises(ValueError):
+            Shape("raster", 10, 10, 30, 30).validated()
+
+
+class AsAJob(unittest.TestCase):
+    def setUp(self):
+        self.clock = _Clock()
+        self.controller = Controller(self.clock)
+        self.transport = Simulator(self.clock)
+        self.controller.attach(self.transport, settle=0)
+        for _ in range(120):
+            self.clock.time += 0.05
+            self.controller.tick()
+        self.assertEqual(self.controller.home_state, "Confirmed", self.controller.message)
+
+    def engraving(self, **changes):
+        values = dict(kind="raster", x=20, y=20, width=30, height=30,
+                      speed=3000, power=500, interval=1.0, image=encode(ramp()))
+        values.update(changes)
+        document = Document()
+        document.add(Shape(**values))
+        return document
+
+    def test_an_engraving_streams_and_finishes_disarmed(self):
+        document = self.engraving()
+        lines = document.gcode(self.controller.origin).splitlines()
+        self.controller.run_job(lines)
+        for _ in range(400000):
+            self.clock.time += 0.05
+            self.controller.tick()
+            if self.controller.phase == "idle" or not self.controller.connected:
+                break
+        self.assertTrue(self.controller.connected, self.controller.message)
+        self.assertEqual(self.controller.phase, "idle")
+        self.assertEqual(self.transport.power, 0)
+        self.assertEqual(self.controller.job_done, self.controller.job_total)
+
+    def test_power_rides_on_the_move_and_is_bounded_by_the_machine(self):
+        marks = [line for line in self.engraving().gcode(self.controller.origin).splitlines()
+                 if line.startswith("G53 G1") and " S" in line]
+        self.assertTrue(marks)
+        for line in marks:
+            self.assertLessEqual(int(line.rsplit(" S", 1)[1]), 500)
+        # The controller refuses more than the machine says it can do.
+        ceiling = self.controller.settings.get(30, 0)
+        with self.assertRaises(GuardError):
+            self.controller._validate_job_command(
+                f"G53 G1 X{self.controller.origin[0]+10:.3f} "
+                f"Y{self.controller.origin[1]+10:.3f} F3000 S{int(ceiling)+1}",
+                self.controller.status.machine)
+        # And refuses power on a rapid, which would mark while repositioning.
+        with self.assertRaises(GuardError):
+            self.controller._validate_job_command(
+                f"G53 G0 X{self.controller.origin[0]+10:.3f} "
+                f"Y{self.controller.origin[1]+10:.3f} S200",
+                self.controller.status.machine)
+
+    def test_a_blank_picture_is_refused_before_anything_is_sent(self):
+        white = np.ones((16, 16), dtype=np.float32)
+        document = self.engraving(image=encode(white))
+        with self.assertRaises(ValueError):
+            document.gcode(self.controller.origin)
+
+
+class _Clock:
+    def __init__(self):
+        self.time = 0
+
+    def __call__(self):
+        return self.time
 
 
 if __name__ == "__main__":

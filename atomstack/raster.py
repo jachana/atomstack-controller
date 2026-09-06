@@ -8,15 +8,19 @@ This module produces runs of constant power as data. Emitting them as G-code is
 the geometry module's job, and validating what reaches the wire is the
 controller's, so the arithmetic here can be tested on its own.
 """
+import base64
+import io
 import math
 
 import numpy as np
+from PIL import Image
 
 from .imaging import resample
 
 MAX_RUNS = 200_000        # A job larger than this takes longer to send than to cut.
 MIN_INTERVAL = 0.02       # Finer than the beam is width, so it only costs time.
 MAX_INTERVAL = 2.0
+RASTER_LEVELS = 32   # Power steps in an engraving; more only adds commands.
 
 
 def engraving_grid(grey, box, interval):
@@ -102,3 +106,46 @@ def engraving_metrics(rows, speed):
             "runs": sum(len(runs) for _, runs in rows),
             "burn_distance": distance,
             "seconds": distance / speed * 60 if speed else math.inf}
+
+
+def encode(grey):
+    """Store greys with the design, so a saved job does not depend on a file."""
+    picture = Image.fromarray((np.clip(grey, 0, 1) * 255).astype(np.uint8), mode="L")
+    buffer = io.BytesIO()
+    picture.save(buffer, format="PNG", optimize=True)
+    return base64.b64encode(buffer.getvalue()).decode("ascii")
+
+
+def decode(data):
+    try:
+        picture = Image.open(io.BytesIO(base64.b64decode(data)))
+        return np.asarray(picture.convert("L"), dtype=np.float32) / 255.0
+    except Exception as exc:
+        raise ValueError(f"The stored image could not be read: {exc}") from exc
+
+
+def shape_commands(shape, origin, feed):
+    """The G-code that engraves one raster object, in machine coordinates.
+
+    Each row is a jump to its first mark, then one move per run of constant
+    power. Power is carried on the move itself, which is what laser mode is
+    for: the beam changes with the position rather than between stops.
+    """
+    ox, oy = origin
+    grid = engraving_grid(decode(shape.image),
+                          (shape.x, shape.y, shape.width, shape.height), shape.interval)
+    power = quantise(grid, levels=RASTER_LEVELS, min_power=0, max_power=shape.power)
+    rows = scan_runs(power, (shape.x, shape.y, shape.width, shape.height), shape.interval)
+    lines = []
+    for y, runs in rows:
+        here = runs[0][0]
+        lines.append(f"G53 G0 X{ox + here:.3f} Y{oy + y:.3f}")
+        lines.append("M4 S0")
+        for start, end, level in runs:
+            if abs(start - here) > 1e-6:
+                # A gap of white between marks: cross it with the beam off.
+                lines.append(f"G53 G1 X{ox + start:.3f} Y{oy + y:.3f} F{feed} S0")
+            lines.append(f"G53 G1 X{ox + end:.3f} Y{oy + y:.3f} F{feed} S{level}")
+            here = end
+        lines.extend(("M5", "S0"))
+    return lines
