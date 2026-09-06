@@ -10,7 +10,7 @@ from atomstack.geometry import BED_X, BED_Y
 from atomstack.viewport import (
     anchor_point, arrow_target, clamp_to_bed, clamp_zoom, corner_handles,
     fit_viewport, handle_at, inside_bed, snap_value, topmost_at, within_bounds,
-    zoom_pan_correction, OPPOSITE, ROTATE_HANDLE, resize_from_handle, snap_to_objects,
+    zoom_pan_correction, OPPOSITE, ROTATE_HANDLE, resize_from_handle, snap_to_objects, measurement,
     rotated_handles, rotation_from_pointer,
 )
 
@@ -314,3 +314,21 @@ class SnappingToObjects(unittest.TestCase):
         nearer = (10.5, 60.0, 20.5, 70.0)         # half a millimetre away
         dx, _, _ = snap_to_objects(moving, [near, nearer], tolerance=3.0)
         self.assertAlmostEqual(dx, 0.5)
+
+
+class Measuring(unittest.TestCase):
+    def test_it_reports_the_distance_and_the_bearing(self):
+        reading = measurement((10.0, 10.0), (40.0, 50.0))
+        self.assertAlmostEqual(reading["distance"], 50.0)      # 3-4-5
+        self.assertAlmostEqual(reading["dx"], 30.0)
+        self.assertAlmostEqual(reading["dy"], 40.0)
+        self.assertAlmostEqual(reading["angle"], 53.130102, places=5)
+
+    def test_the_angle_reads_the_way_the_rotation_field_does(self):
+        self.assertAlmostEqual(measurement((0, 0), (10, 0))["angle"], 0.0)
+        self.assertAlmostEqual(measurement((0, 0), (0, 10))["angle"], 90.0)
+        self.assertAlmostEqual(measurement((0, 0), (-10, 0))["angle"], 180.0)
+        self.assertAlmostEqual(measurement((0, 0), (0, -10))["angle"], 270.0)
+
+    def test_measuring_nothing_is_zero_rather_than_an_error(self):
+        self.assertEqual(measurement((5, 5), (5, 5))["distance"], 0.0)

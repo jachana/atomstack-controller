@@ -224,5 +224,60 @@ class GeometryTests(unittest.TestCase):
             document.preview_segments((math.nan, 0))
 
 
+
+class ShapeFamily(unittest.TestCase):
+    """Rounded rectangles, polygons and stars fill the box they are given."""
+
+    def test_every_kind_fills_its_box_exactly(self):
+        for shape in (Shape("rectangle", 10, 10, 40, 30),
+                      Shape("rounded", 10, 10, 40, 30, corner=8),
+                      Shape("circle", 10, 10, 40, 30),
+                      Shape("polygon", 10, 10, 40, 30, sides=6),
+                      Shape("polygon", 10, 10, 40, 30, sides=3),
+                      Shape("star", 10, 10, 40, 30, sides=5, corner=0.45)):
+            with self.subTest(kind=shape.kind, sides=shape.sides):
+                left, bottom, right, top = shape_bounds(shape.validated())
+                self.assertAlmostEqual(left, 10, places=6)
+                self.assertAlmostEqual(bottom, 10, places=6)
+                self.assertAlmostEqual(right, 50, places=6)
+                self.assertAlmostEqual(top, 40, places=6)
+
+    def test_a_polygon_has_the_corners_it_was_asked_for(self):
+        for sides in (3, 5, 8, 24):
+            points = path_points(Shape("polygon", 0, 0, 40, 40, sides=sides).validated())
+            self.assertEqual(len(points) - 1, sides)      # the last repeats the first
+
+    def test_a_star_alternates_out_and_in(self):
+        points = path_points(Shape("star", 0, 0, 40, 40, sides=5, corner=0.4).validated())
+        self.assertEqual(len(points) - 1, 10)
+        centre = (20.0, 20.0)
+        reaches = [math.dist(centre, p) for p in points[:-1]]
+        self.assertGreater(min(reaches[0::2]), max(reaches[1::2]))
+
+    def test_a_rounded_corner_pulls_in_from_the_square_one(self):
+        square = path_points(Shape("rectangle", 0, 0, 40, 30).validated())
+        rounded = path_points(Shape("rounded", 0, 0, 40, 30, corner=10).validated())
+        # No point of a rounded rectangle sits in the corner a square one has.
+        for x, y in rounded:
+            self.assertFalse(x < 1 and y < 1, "the corner should be cut away")
+        self.assertIn((0.0, 0.0), [(round(x, 6), round(y, 6)) for x, y in square])
+
+    def test_a_radius_larger_than_the_box_is_clamped_not_refused(self):
+        shape = Shape("rounded", 0, 0, 40, 20, corner=999).validated()
+        left, bottom, right, top = shape_bounds(shape)
+        self.assertAlmostEqual(right - left, 40, places=6)
+        self.assertAlmostEqual(top - bottom, 20, places=6)
+
+    def test_the_new_shapes_check_their_own_settings(self):
+        for shape in (Shape("polygon", 0, 0, 10, 10, sides=2),
+                      Shape("polygon", 0, 0, 10, 10, sides=25),
+                      Shape("star", 0, 0, 10, 10, sides=5, corner=0.0),
+                      Shape("star", 0, 0, 10, 10, sides=5, corner=1.5),
+                      Shape("rounded", 0, 0, 10, 10, corner=-1)):
+            with self.subTest(kind=shape.kind):
+                with self.assertRaises(ValueError):
+                    shape.validated()
+
+
 if __name__ == "__main__":
     unittest.main()

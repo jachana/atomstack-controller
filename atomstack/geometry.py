@@ -32,6 +32,8 @@ class Shape:
     mode: str = "line"
     interval: float = 0.2
     group: str = ""        # Shapes sharing a name move and scale together.
+    corner: float = 0.0    # Corner radius for a rounded rectangle; point depth for a star.
+    sides: int = 0         # Vertices of a polygon, or points of a star.
     image: str = ""        # Base64 PNG of the greys to engrave, for kind "raster".
     line_spacing: float = 1.2
     letter_spacing: float = 0.0
@@ -48,7 +50,8 @@ class Shape:
         values = (self.x, self.y, self.width, self.height)
         if not all(math.isfinite(v) for v in values):
             raise ValueError("Geometry values must be finite numbers.")
-        if self.kind not in ("rectangle", "circle", "line", "text", "path", "raster"):
+        if self.kind not in ("rectangle", "circle", "line", "text", "path", "raster",
+                             "rounded", "polygon", "star"):
             raise ValueError("Unknown geometry type.")
         if self.kind == "raster":
             if not self.image or not isinstance(self.image, str):
@@ -81,6 +84,13 @@ class Shape:
                 raise ValueError("Letter spacing must be between -0.2 and 2 times the text size.")
             if self.font_family not in FONT_FILES:
                 raise ValueError("Choose Arial, Segoe UI, or Consolas.")
+        if self.kind in ("polygon", "star"):
+            if type(self.sides) is not int or not 3 <= self.sides <= 24:
+                raise ValueError("A polygon or star needs between 3 and 24 points.")
+        if self.kind == "star" and not 0.1 <= self.corner <= 0.9:
+            raise ValueError("Star point depth must be between 0.1 and 0.9.")
+        if self.kind == "rounded" and (not math.isfinite(self.corner) or self.corner < 0):
+            raise ValueError("Corner radius cannot be negative.")
         if self.mode not in ("line", "fill") or not math.isfinite(self.interval) or not 0.05 <= self.interval <= 5:
             raise ValueError("Choose line or fill with a line interval between 0.05 and 5 mm.")
         if self.kind == "path":
@@ -252,7 +262,7 @@ class Document:
 
     def to_payload(self):
         self.validate_layers()
-        return {"format": "atomstack-design", "version": 6,
+        return {"format": "atomstack-design", "version": 7,
                 "bed": {"width": BED_X, "height": BED_Y},
                 "shapes": [shape.validated().__dict__ for shape in self.shapes],
                 "layers": [layer.__dict__ for layer in self.layers],
@@ -263,7 +273,7 @@ class Document:
         if not isinstance(data, dict) or data.get("format") != "atomstack-design" or not isinstance(data.get("shapes"), list):
             raise ValueError("This is not an Atomstack design file.")
         version = data.get("version", 1)
-        if type(version) is not int or version not in (1, 2, 3, 4, 5, 6):
+        if type(version) is not int or version not in (1, 2, 3, 4, 5, 6, 7):
             raise ValueError(f"Unsupported Atomstack design version: {version}.")
         document = cls()
         document.shapes = [Shape(**item).validated() for item in data["shapes"]]
@@ -433,6 +443,43 @@ def _base_shape_paths(shape):
     if shape.kind == "text":
         return text_paths(shape.text, x, y, w, h, shape.font_family,
                           shape.line_spacing, shape.letter_spacing, shape.text_align)
+    if shape.kind == "rounded":
+        # Radius cannot exceed half the shorter side, or the corners meet.
+        radius = min(shape.corner, w / 2, h / 2)
+        if radius <= 0:
+            return [[(x, y), (x + w, y), (x + w, y + h), (x, y + h), (x, y)]]
+        steps = max(4, int(radius * 4))
+        path = []
+        for corner_x, corner_y, start in ((x + w - radius, y + radius, -90),
+                                          (x + w - radius, y + h - radius, 0),
+                                          (x + radius, y + h - radius, 90),
+                                          (x + radius, y + radius, 180)):
+            for step in range(steps + 1):
+                angle = math.radians(start + 90 * step / steps)
+                path.append((corner_x + radius * math.cos(angle),
+                             corner_y + radius * math.sin(angle)))
+        path.append(path[0])
+        return [path]
+    if shape.kind in ("polygon", "star"):
+        cx, cy = x + w / 2, y + h / 2
+        points = []
+        count = shape.sides * (2 if shape.kind == "star" else 1)
+        for index in range(count):
+            # First vertex at the top, so a shape sits the way it is drawn.
+            angle = math.pi / 2 + 2 * math.pi * index / count
+            reach = 1.0 if shape.kind == "polygon" or index % 2 == 0 else shape.corner
+            points.append((math.cos(angle) * reach, math.sin(angle) * reach))
+        # Stretch the result to fill the box, so width and height mean what the
+        # panel says rather than the width of a circle the shape sits inside.
+        left = min(px for px, _ in points)
+        right = max(px for px, _ in points)
+        bottom = min(py for _, py in points)
+        top = max(py for _, py in points)
+        span_x, span_y = right - left, top - bottom
+        scaled = [(x + (px - left) / span_x * w if span_x else x + w / 2,
+                   y + (py - bottom) / span_y * h if span_y else y + h / 2)
+                  for px, py in points]
+        return [scaled + [scaled[0]]]
     cx, cy = x + w / 2, y + h / 2
     return [[(cx + w / 2 * math.cos(2 * math.pi * i / 72),
               cy + h / 2 * math.sin(2 * math.pi * i / 72)) for i in range(73)]]

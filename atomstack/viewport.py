@@ -286,3 +286,15 @@ def snap_to_objects(moving, others, tolerance):
                         best[axis] = (distance, target - value, target)
     return best[0][1], best[1][1], tuple(
         (axis, position) for axis, (_, _, position) in enumerate(best) if position is not None)
+
+
+def measurement(start, end):
+    """Distance and bearing between two bed points, for the measure tool.
+
+    The angle is degrees counter-clockwise from the X axis, which is how the
+    rotation field reads, so a measured edge can be typed straight into it.
+    """
+    dx, dy = end[0] - start[0], end[1] - start[1]
+    return {"dx": dx, "dy": dy,
+            "distance": math.hypot(dx, dy),
+            "angle": math.degrees(math.atan2(dy, dx)) % 360}

@@ -20,7 +20,7 @@ from .viewport import (
     anchor_point, arrow_target, clamp_to_bed, clamp_zoom, corner_handles, fit_viewport,
     handle_at as handle_hit, inside_bed, snap_value, topmost_at,
     zoom_pan_correction, ROTATE_HANDLE, resize_from_handle, rotated_handles,
-    snap_to_objects,
+    snap_to_objects, measurement,
     rotation_from_pointer, transformed_point,
 )
 
@@ -678,7 +678,9 @@ class GeometryWindow:
         tool_rail.grid(row=0, column=0, sticky="ns")
         dock = ttk.Frame(content, width=320)
         dock.grid(row=0, column=2, sticky="nsew")
-        for text, value in (("Select / move", "select"), ("Pan", "pan"), ("Rectangle", "rectangle"), ("Ellipse", "circle"), ("Line", "line"), ("Text", "text")):
+        for text, value in (("Select / move", "select"), ("Pan", "pan"), ("Rectangle", "rectangle"),
+                            ("Rounded", "rounded"), ("Ellipse", "circle"), ("Polygon", "polygon"),
+                            ("Star", "star"), ("Line", "line"), ("Text", "text"), ("Measure", "measure")):
             ttk.Radiobutton(tool_rail, text=text, variable=self.tool, value=value).pack(anchor="w", pady=8)
         ttk.Separator(tool_rail).pack(fill="x", pady=8)
         ttk.Checkbutton(tool_rail, text="Keep ratio", variable=self.keep_ratio).pack(anchor="w", pady=4)
@@ -868,7 +870,9 @@ class GeometryWindow:
         self.text_align = tk.StringVar(value="left")
         ttk.Combobox(align_row, textvariable=self.text_align, values=ALIGNMENTS,
                      state="readonly", width=12).pack(side="right")
-        for label, variable, default in (("Line spacing · em", "line_spacing", "1.2"),
+        for label, variable, default in (("Corner / point", "corner", "3"),
+                                         ("Sides / points", "sides", "5"),
+                                         ("Line spacing · em", "line_spacing", "1.2"),
                                          ("Letter spacing · em", "letter_spacing", "0.0")):
             row = ttk.Frame(side)
             row.pack(fill="x", pady=1)
@@ -1173,6 +1177,8 @@ class GeometryWindow:
                      int(self.fields["speed"].get()), int(self.fields["power"].get()), int(self.fields["passes"].get()),
                      self.fields["text"].get(), self.font_family.get(),
                      rotation=float(self.fields["rotation"].get()),
+                     corner=float(self.fields["corner"].get()),
+                     sides=int(float(self.fields["sides"].get())),
                      line_spacing=float(self.fields["line_spacing"].get()),
                      letter_spacing=float(self.fields["letter_spacing"].get()),
                      text_align=self.text_align.get(),
@@ -1186,6 +1192,14 @@ class GeometryWindow:
             operation()
         except (ValueError, IndexError, GuardError) as exc:
             self.message.set(str(exc))
+
+    measure_from = None
+    measure_line = None
+
+    def clear_measurement(self):
+        self.measure_from = None
+        self.measure_line = None
+        self.draw()
 
     def group_members(self, indices):
         """Everything sharing a group with the given selection.
@@ -2043,6 +2057,21 @@ class GeometryWindow:
         if self.tool.get() == "pan":
             self.pan_press(event)
             return
+        if self.tool.get() == "measure":
+            point = self.to_bed(event)
+            if self.measure_from is None:
+                self.measure_from = point
+                self.message.set(f"Measuring from X {point[0]:.1f}, Y {point[1]:.1f}. "
+                                 "Click the second point.")
+            else:
+                reading = measurement(self.measure_from, point)
+                self.measure_line = (self.measure_from, point)
+                self.measure_from = None
+                self.message.set(
+                    f"{reading['distance']:.2f} mm  ·  dX {reading['dx']:.2f}  "
+                    f"dY {reading['dy']:.2f}  ·  {reading['angle']:.1f}°")
+            self.draw()
+            return
         if self.tool.get() == "select":
             handle = self.handle_at(event)
             index = self.selected if handle else self.shape_at(event)
@@ -2265,6 +2294,11 @@ class GeometryWindow:
                 self.bed.create_text(cx,cy-12,text=label,fill=color,tags=("beam-position",))
         selected_indices = set(self.selected_indices())
         self.raster_images = []          # Tk drops an image it holds no reference to.
+        line = getattr(self, "measure_line", None)
+        if line:
+            (ax, ay), (bx, by) = line
+            self.bed.create_line(x0+ax*scale, y0-ay*scale, x0+bx*scale, y0-by*scale,
+                                 fill="#0f9d58", width=2, arrow="both", tags=("measure",))
         for axis, position in getattr(self, "snap_guides", ()):
             # Show what a drag lined up with, or the object appears to stick.
             if axis == 0:

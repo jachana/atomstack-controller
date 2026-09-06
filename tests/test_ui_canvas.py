@@ -546,6 +546,41 @@ class CanvasBehaviour(unittest.TestCase):
         self.assertEqual(len(editor.document.shapes), before)
         self.assertIn("clipboard", editor.message.get())
 
+    def test_measuring_takes_two_clicks_and_reports_the_span(self):
+        editor = self.app.geometry
+        editor.tool.set("measure")
+        view = editor.transform()
+        editor.press(fake_event(*view.to_canvas(20, 20)))
+        self.assertIn("Click the second point", editor.message.get())
+        self.assertEqual(editor.document.shapes, [])      # it draws nothing
+        editor.press(fake_event(*view.to_canvas(50, 60)))
+        self.assertIn("50.00 mm", editor.message.get())   # 30 by 40
+        self.assertIn("53.1", editor.message.get())       # its bearing
+        self.assertEqual(editor.document.shapes, [])
+        self.assertEqual(len(editor.bed.find_withtag("measure")), 1)
+        editor.clear_measurement()
+        self.assertEqual(len(editor.bed.find_withtag("measure")), 0)
+        editor.tool.set("select")
+
+    def test_the_new_shapes_can_be_added_from_the_panel(self):
+        editor = self.app.geometry
+        for tool, fields in (("rounded", {"corner": "6"}),
+                             ("polygon", {"sides": "6"}),
+                             ("star", {"sides": "5", "corner": "0.4"})):
+            editor.document.shapes.clear()
+            editor.set_selection(())      # the app clears selection when it empties
+            editor.tool.set(tool)
+            for name, value in {"x": "10", "y": "10", "width": "40", "height": "30"}.items():
+                editor.fields[name].set(value)
+            for name, value in fields.items():
+                editor.fields[name].set(value)
+            editor.add_from_values()
+            self.assertEqual(len(editor.document.shapes), 1, tool)
+            added = editor.document.shapes[0]
+            self.assertEqual(added.kind, tool)
+            self.assertEqual(shape_bounds(added), (10, 10, 50, 40))
+        editor.tool.set("select")
+
     def test_text_resize_handles_match_the_nominal_editable_box(self):
         editor = self.app.geometry
         text = Shape("text", 10, 20, 100, 30, text="I")
@@ -570,7 +605,7 @@ class CanvasBehaviour(unittest.TestCase):
             editor.design_path = save_path
             editor.save_design()
             saved = json.loads(save_path.read_text(encoding="utf-8"))
-            self.assertEqual(saved["version"], 6)
+            self.assertEqual(saved["version"], 7)
             self.assertEqual(saved["shapes"][0]["rotation"], 90)
             self.assertTrue(saved["shapes"][0]["mirror_x"])
             self.assertEqual(list(Path(folder).glob("*.tmp")), [],
