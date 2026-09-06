@@ -630,6 +630,7 @@ class GeometryWindow:
         self.pan_x = 0.0
         self.pan_y = 0.0
         self.zoom_text = tk.StringVar(value="100%")
+        self.keep_ratio = tk.BooleanVar(value=False)
         self.snap_enabled = tk.BooleanVar(value=True)
         self.grid_size = tk.StringVar(value="1 mm")
         self.design_path = None
@@ -671,6 +672,8 @@ class GeometryWindow:
         dock.grid(row=0, column=2, sticky="nsew")
         for text, value in (("Select / move", "select"), ("Pan", "pan"), ("Rectangle", "rectangle"), ("Ellipse", "circle"), ("Line", "line"), ("Text", "text")):
             ttk.Radiobutton(tool_rail, text=text, variable=self.tool, value=value).pack(anchor="w", pady=8)
+        ttk.Separator(tool_rail).pack(fill="x", pady=8)
+        ttk.Checkbutton(tool_rail, text="Keep ratio", variable=self.keep_ratio).pack(anchor="w", pady=4)
         ttk.Separator(toolbar, orient="vertical").pack(side="left", fill="y", padx=5)
         self.undo_button = ttk.Button(toolbar, text="Undo", command=self.undo)
         self.undo_button.pack(side="left", padx=(5, 3))
@@ -1294,6 +1297,11 @@ class GeometryWindow:
             if self.selected is None:
                 raise ValueError("Select a shape first.")
             candidate = self.values().validated()
+            if self.keep_ratio.get() and len(self.selected_indices()) == 1:
+                from .viewport import proportional_size
+                current = self.document.shapes[self.selected]
+                width, height = proportional_size(current.width, current.height, candidate.width, candidate.height)
+                candidate = replace(candidate, width=width, height=height).validated()
             if any(self.document.shapes[i].layer for i in self.selected_indices()):
                 current = self.document.shapes[self.selected]
                 candidate = Shape(**{**candidate.__dict__, "speed": current.speed, "power": current.power, "passes": current.passes, "layer": current.layer})
@@ -1894,7 +1902,8 @@ class GeometryWindow:
                 candidate = resize_from_handle(self.interaction["handle"],
                                                (self.snap(current[0]), self.snap(current[1])),
                                                box, original.rotation, original.mirror_x, original.mirror_y,
-                                               minimum=0.0 if original.kind == "line" else 0.1)
+                                               minimum=0.0 if original.kind == "line" else 0.1,
+                                               keep_ratio=self.keep_ratio.get())
                 candidates = {self.selected: candidate}
             self.begin_design_change()
             try:

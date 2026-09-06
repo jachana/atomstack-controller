@@ -366,3 +366,12 @@ left in place. Offset-aware travel checks reject unreachable placements.
 The canvas shades the unreachable X strip and displays Mark/Cut positions
 when homed. This release also includes the intervening DXF, text layout, rotated
 handles, off-bed editing, and welding commits.
+
+## Proportional resizing 0.16.1
+
+Keep ratio in the left toolbar preserves a selected object’s proportions during
+corner dragging (including rotated/mirrored objects) and numeric Apply. Edit one
+dimension and Apply calculates the other. Inconsistent changes to both dimensions
+are rejected. Undo restores the previous geometry. Zero-width/height lines cannot
+use numeric ratio locking. Multi-selection continues to edit shared process values.
+The lock is an editing preference for the current session, initially off.

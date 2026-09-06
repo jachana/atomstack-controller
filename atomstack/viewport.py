@@ -187,7 +187,7 @@ def rotated_handles(shape_box, rotation, mirror_x=False, mirror_y=False, rotatio
 
 
 def resize_from_handle(handle, pointer, shape_box, rotation, mirror_x=False, mirror_y=False,
-                       minimum=0.0):
+                       minimum=0.0, keep_ratio=False):
     """New x/y/width/height for dragging ``handle`` to ``pointer``.
 
     The opposite corner is the anchor: it stays exactly where it was, so a
@@ -205,6 +205,10 @@ def resize_from_handle(handle, pointer, shape_box, rotation, mirror_x=False, mir
     # The axes are orthonormal, so projecting onto them inverts the rotation.
     width = abs(delta[0] * axis_x[0] + delta[1] * axis_x[1])
     height = abs(delta[0] * axis_y[0] + delta[1] * axis_y[1])
+    if keep_ratio and shape_box[2] > 0 and shape_box[3] > 0:
+        factor = max(width / shape_box[2], height / shape_box[3],
+                     minimum / shape_box[2], minimum / shape_box[3])
+        width, height = shape_box[2] * factor, shape_box[3] * factor
     width, height = max(minimum, width), max(minimum, height)
     # Put the centre back where it has to be for the anchor to have not moved.
     sx, sy = CORNER_SIGNS[anchor_name]
@@ -239,3 +243,15 @@ def zoom_pan_correction(before, after, scale):
     the y term is negated because the canvas y axis points down.
     """
     return (after[0] - before[0]) * scale, -(after[1] - before[1]) * scale
+
+
+def proportional_size(old_width, old_height, width, height):
+    """Resolve a single edited dimension, rejecting conflicting paired edits."""
+    if not all(math.isfinite(v) and v > 0 for v in (old_width, old_height, width, height)):
+        raise ValueError("Keep ratio requires non-zero width and height.")
+    changed_w = not math.isclose(width, old_width)
+    changed_h = not math.isclose(height, old_height)
+    if changed_w and changed_h and not math.isclose(width/old_width, height/old_height, rel_tol=1e-5):
+        raise ValueError("Keep ratio is on: edit only width or height, or turn it off.")
+    factor = height/old_height if changed_h and not changed_w else width/old_width
+    return old_width*factor, old_height*factor
