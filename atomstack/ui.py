@@ -1225,6 +1225,14 @@ class GeometryWindow:
         self.measure_line = None
         self.draw()
 
+    def set_home_after_job(self):
+        """Park the head at home when a job ends, or leave it where it stopped."""
+        self.controller.home_after_job = self.home_after_job.get()
+        self.remember_session()
+        self.message.set("The machine will home when a job finishes."
+                         if self.controller.home_after_job else
+                         "The head will stay where the job ended.")
+
     def restore_session(self):
         """Put the window back where it was, and start in the last folder used."""
         self.last_folder = ""
@@ -1232,6 +1240,8 @@ class GeometryWindow:
             saved = json.loads(self.session_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return
+        if isinstance(saved.get("home_after_job"), bool):
+            self.controller.home_after_job = saved["home_after_job"]
         folder = saved.get("folder")
         if isinstance(folder, str) and Path(folder).is_dir():
             self.last_folder = folder
@@ -1253,7 +1263,8 @@ class GeometryWindow:
         try:
             top = self.window.winfo_toplevel()
             atomic_json(self.session_path,
-                        {"folder": self.last_folder, "window": top.geometry()})
+                        {"folder": self.last_folder, "window": top.geometry(),
+                         "home_after_job": self.controller.home_after_job})
         except (OSError, ValueError, tk.TclError):
             pass  # Remembering where the window was is never worth an error.
 

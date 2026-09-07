@@ -645,6 +645,21 @@ class CanvasBehaviour(unittest.TestCase):
         editor.refresh()
         self.assertIn("about", editor.frame_status.get())
 
+    def test_the_home_when_finished_toggle_reaches_the_controller(self):
+        editor = self.app.geometry
+        self.assertTrue(editor.controller.home_after_job)
+        editor.home_after_job.set(False)
+        editor.set_home_after_job()
+        self.assertFalse(editor.controller.home_after_job)
+        self.assertIn("stay where the job ended", editor.message.get())
+        editor.home_after_job.set(True)
+        editor.set_home_after_job()
+        self.assertTrue(editor.controller.home_after_job)
+        # And it is remembered, so the choice survives a restart.
+        import json
+        saved = json.loads(editor.session_path.read_text(encoding="utf-8"))
+        self.assertIs(saved["home_after_job"], True)
+
     def test_text_resize_handles_match_the_nominal_editable_box(self):
         editor = self.app.geometry
         text = Shape("text", 10, 20, 100, 30, text="I")
