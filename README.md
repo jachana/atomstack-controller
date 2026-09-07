@@ -1,13 +1,37 @@
 # Atomstack personal controller
 
-A native Windows desktop controller for the user's existing Atomstack X10/A10
-GRBL-like firmware. It includes guarded laser-off framing and direct generated-job
-sending over USB.
+A Windows desktop controller for an Atomstack X10/A10 diode laser running
+GRBL 1.1 firmware. Draw or import artwork, trace and engrave photographs, and
+send jobs over USB, with laser-off framing before anything fires.
+
+## What this is, and what it is not
+
+**It drives a laser.** Connecting homes the machine straight away: the head
+travels to the limit switches without asking first, and a job ends by homing
+again. Both are on by default and both can be turned off. Sending a job fires
+the beam. Nothing here should be run unattended.
+
+**It has met real hardware, barely.** It has cut and engraved on the author's
+machine, and the guards are extensively tested — but against a simulator written
+alongside them, not against a certified model of your controller. `VERIFICATION.md`
+records exactly what has and has not been checked, including what remains
+unverified on hardware. Read it before trusting this near anything expensive.
+
+**It is built for one machine.** The live `$$` settings are checked against a
+recorded profile of a specific X10/A10 with V1.055 firmware, and motion is
+refused when they differ. That is deliberate — wrong travel limits are how a
+sender drives a head into a frame — but it means this will not run your machine
+until you replace `atomstack/fixtures/observed.txt` with your own dump and
+review the checks that depend on it.
+
+**It is not a safety device.** There is no interlock, no fire detection and no
+certification of any kind. The MIT licence's warranty disclaimer is not a
+formality here.
 
 ## Run
 
-Open **`AtomstackController.exe`** (current version 0.14.0) or the explicitly versioned
-`AtomstackController-0.14.0.exe` from this delivery folder. Close older
+Open **`AtomstackController.exe`** or the explicitly versioned
+`AtomstackController-0.26.0.exe` from this delivery folder. Close older
 versions first. No Python installation
 is needed for the executable. Choose **Open simulator** to explore without hardware.
 
@@ -295,11 +319,11 @@ schema 3 persists layers; schema 1 and 2 designs still open without changing the
 individual process settings. Preview closes when layers change.
 
 
-## Daily-workflow tools (0.14.0)
+## Daily-workflow tools
 
 - **File → Import SVG** imports vector paths, basic shapes, groups, transforms, and
   curves at a 0.05 mm flattening tolerance. Page units and viewBox are respected;
-  the imported artwork must fit the bed. SVG text must first be converted to paths.
+  oversized artwork imports and is refused at send rather than at import. SVG text must first be converted to paths.
   Images, CSS classes, clipping, masks, filters, rounded-rectangle elements, and
   unsupported viewport alignments are rejected rather than silently omitted.
 - **File → Save as / Recent designs / Recover autosave** supports everyday project
