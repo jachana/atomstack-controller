@@ -400,6 +400,13 @@ are rejected. Undo restores the previous geometry. Zero-width/height lines canno
 use numeric ratio locking. Multi-selection continues to edit shared process values.
 The lock is an editing preference for the current session, initially off.
 
+## Contributing
+
+`CONTRIBUTING.md` has the setup, the test and verification commands, and the rules
+that exist because this drives a laser: never move hardware from a test or a
+build, never loosen a guard to make a feature work, and say plainly in a pull
+request what you did not verify.
+
 ## Licence
 
 MIT, in `LICENSE`. Use it, change it, ship it.
