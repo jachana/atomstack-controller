@@ -1,16 +1,16 @@
 {
   "notices": "current",
-  "generated": "2026-09-07T00:21:00Z",
-  "commit": "6165921",
+  "generated": "2026-09-07T00:22:13Z",
+  "commit": "cb0f5ea",
   "branch": "master",
-  "tree_clean": false,
+  "tree_clean": true,
   "python": "3.12.10",
   "platform": "Windows-11-10.0.26200-SP0",
   "tests": {
     "command": "python -m pytest -q",
     "passed": 354,
     "failed": 0,
-    "summary": "354 passed in 6.03s",
+    "summary": "354 passed in 6.96s",
     "exit_code": 0
   },
   "executables": {
@@ -190,9 +190,20 @@
         "bed_setting": true
       }
     },
+    "AtomstackController-0.26.0.exe": {
+      "bytes": 38521180,
+      "sha256": "b898720c91670991ab6a24ff2757cd56920aff72b386acc0eeeb456c00d6149f",
+      "fixture": {
+        "checked": true,
+        "present": true,
+        "entry": "atomstack\\fixtures\\observed.txt",
+        "firmware_line": true,
+        "bed_setting": true
+      }
+    },
     "AtomstackController.exe": {
-      "bytes": 38519477,
-      "sha256": "f05bf5fda2d70f996938d9b0ba6a1befdb60377d8f477256c98e55b9d39c4bd2",
+      "bytes": 38521180,
+      "sha256": "b898720c91670991ab6a24ff2757cd56920aff72b386acc0eeeb456c00d6149f",
       "fixture": {
         "checked": true,
         "present": true,
