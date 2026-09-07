@@ -139,9 +139,10 @@ should not have, say so in the first line.
 
 ## Behaviour
 
-Be decent to people. Assume the person on the other end is trying to make the
-thing work. Harassment or hostility gets your contribution declined regardless of
-its merits.
+This project follows the Contributor Covenant, in `CODE_OF_CONDUCT.md`. The short
+version: assume the person on the other end is trying to make the thing work.
+Harassment or hostility gets a contribution declined regardless of its merits.
+Report a problem to julio@juliocode.com.
 
 ## Licence
 
