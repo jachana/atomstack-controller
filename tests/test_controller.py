@@ -597,6 +597,52 @@ class SessionTests(unittest.TestCase):
         self.c.inflight[0].seconds = 0.01
         self.assertTrue(self.c._room_for(Command("G53 G1 X2.000 Y2.000 F60", "job")))
 
+    def test_a_finished_job_parks_the_head_at_home(self):
+        self.home()
+        homings = lambda: len([w for w in self.t.writes if w.startswith(b"$H")])
+        before = homings()
+        ox, oy = self.c.origin
+        lines = ("G21", "G90", "M5", "S0", f"G53 G0 X{ox+10:.3f} Y{oy+10:.3f}",
+                 "M4 S200", f"G53 G1 X{ox+30:.3f} Y{oy+10:.3f} F3000", "M5", "S0")
+        self.c.run_job(lines)
+        for _ in range(4000):
+            self.pump(1)
+            if not self.c.connected or (self.c.phase == "idle" and not self.c.home_pending
+                                        and homings() > before):
+                break
+        self.assertTrue(self.c.connected, self.c.message)
+        self.assertEqual(homings(), before + 1, "the job should end with a homing cycle")
+        self.assertEqual(self.c.home_state, "Confirmed")
+        self.assertEqual(self.t.power, 0)
+        # The outcome of the job survives the homing that follows it.
+        self.assertIn("Job complete", self.c.message)
+
+    def test_leaving_it_off_leaves_the_head_where_the_job_ended(self):
+        self.home()
+        self.c.home_after_job = False
+        homings = lambda: len([w for w in self.t.writes if w.startswith(b"$H")])
+        before = homings()
+        ox, oy = self.c.origin
+        lines = ("G21", "G90", "M5", "S0", f"G53 G0 X{ox+10:.3f} Y{oy+10:.3f}",
+                 "M4 S200", f"G53 G1 X{ox+30:.3f} Y{oy+10:.3f} F3000", "M5", "S0")
+        self.c.run_job(lines)
+        for _ in range(4000):
+            self.pump(1)
+            if not self.c.connected or "Job complete" in self.c.message:
+                break
+        self.assertEqual(homings(), before)
+        self.assertEqual(self.c.phase, "idle")
+        self.assertNotEqual([round(v, 1) for v in self.t.position], list(self.t.home))
+
+    def test_a_job_that_faults_does_not_go_on_to_home(self):
+        """A fault closes the session; nothing should move afterwards."""
+        self.home()
+        self.c.phase = "job-status"
+        self.c.job_final_target = (self.c.origin[0] + 999, self.c.origin[1])
+        self.c.receive(f"<Idle|MPos:{self.c.origin[0]},{self.c.origin[1]},0|FS:0,0>")
+        self.assertFalse(self.c.connected)
+        self.assertFalse(self.c.home_pending)
+
     def test_job_stops_on_excess_reported_power_or_wrong_final_position(self):
         self.home()
         self.c.phase = "job-command"

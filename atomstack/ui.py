@@ -766,6 +766,11 @@ class GeometryWindow:
         self.frame_button.grid(row=2, column=0, sticky="ew", padx=2, pady=3)
         self.preview_button = ttk.Button(action_bar, text="Preview", command=self.open_preview)
         self.preview_button.grid(row=2, column=1, sticky="ew", padx=2, pady=3)
+        self.home_after_job = tk.BooleanVar(value=self.controller.home_after_job)
+        ttk.Checkbutton(action_bar, text="Home when the job finishes",
+                        variable=self.home_after_job,
+                        command=self.set_home_after_job).grid(row=2, column=0, columnspan=2,
+                                                              sticky="w", pady=(2, 0))
         ttk.Label(action_bar, text="Frame mm/min").grid(row=3, column=0, sticky="w", pady=4)
         ttk.Combobox(action_bar, textvariable=self.frame_speed, values=tuple(map(str, JOG_FEEDS)), state="readonly", width=9).grid(row=3, column=1, sticky="ew")
         ttk.Button(action_bar, text="Create material test…", command=self.open_burn_test).grid(row=4, column=0, columnspan=2, sticky="ew", pady=4)

@@ -60,6 +60,9 @@ class Controller:
         self.transport = None
         self.alignment_valid = True
         self.auto_home = True  # Home on connect, and trust the cycle's own endpoint.
+        # Park the head somewhere known when a job finishes, instead of leaving
+        # it wherever the last cut ended.
+        self.home_after_job = True
         self.beam_offset_x = 0.0  # Cutting beam minus positioning mark, millimetres.
         self.log = deque(maxlen=800)
         self.rx_count = 0
@@ -97,6 +100,7 @@ class Controller:
         self.last_tick = None
         self.deferred_motion = None
         self.home_pending = False
+        self.homing_after_job = False
         self.frame_waypoints = deque()
         self.frame_feed = None
         self.job_commands = deque()
@@ -770,7 +774,12 @@ class Controller:
                     self.origin = report.machine
                     self.home_state = "Confirmed"
                     self.phase = "idle"
-                    self.message = "Homed. Bottom-left is app (0, 0)."
+                    # Keep the outcome of the job in view: a completion message
+                    # replaced a second later by "Homed" is one nobody reads.
+                    self.message = ("Job complete. Homed, bottom-left is app (0, 0)."
+                                    if self.homing_after_job
+                                    else "Homed. Bottom-left is app (0, 0).")
+                    self.homing_after_job = False
                 else:
                     self.phase = "home-confirm"
                     self.home_state = "Awaiting confirmation"
@@ -805,6 +814,13 @@ class Controller:
                 self.motion_deadline = math.inf
                 self.job_expected_power = 0
                 self.message = "Job complete. Controller reports Idle with zero laser power."
+                if self.home_after_job:
+                    self.homing_after_job = True
+                    # Requested the same way a manual home is, so it waits for
+                    # the same verified profile, disarmed laser and fresh
+                    # position rather than moving straight off the back of a job.
+                    self.home_pending = True
+                    self.message += " Homing."
             elif self.origin is not None and self.phase == "idle":
                 if report.state != "Idle" or not self._near(report.machine, self.last_position):
                     self.fault("Unexpected movement or missing machine position.")
